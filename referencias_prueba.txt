@@ -1,0 +1,9 @@
+# Bibliografía de prueba: 5 reales, 1 fabricada, 1 con año incorrecto, 1 retractada
+Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.
+Hirsch J.E. (2005): An index to quantify an individual's scientific research output. Proceedings of the National Academy of Sciences, 102: 16569-16572.
+Aria M., Cuccurullo C. (2017): bibliometrix: An R-tool for comprehensive science mapping analysis. Journal of Informetrics, 11: 959-975.
+van Eck N.J., Waltman L. (2010): Software survey: VOSviewer, a computer program for bibliometric mapping. Scientometrics, 84: 523-538.
+Fortunato S. et al. (2018): Science of science. Science, 359: eaao0185.
+García-Martínez J., Chen L. (2021): Semantic drift in citation cascades: a large-scale longitudinal analysis. Journal of Informetrics, 15: 101-118.
+Hirsch J.E. (2011): An index to quantify an individual's scientific research output. Proceedings of the National Academy of Sciences, 102: 16569-16572.
+Wakefield A.J. et al. (1998): Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and pervasive developmental disorder in children. The Lancet, 351: 637-641.

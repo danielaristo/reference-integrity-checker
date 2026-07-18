@@ -1,0 +1,8 @@
+# Corridas en progreso / archivos temporales
+candidatas_s2.csv
+prueba_s2.csv
+reporte_prueba*.csv
+reporte_muestra_real*.csv
+reporte.csv
+.DS_Store
+__pycache__/
