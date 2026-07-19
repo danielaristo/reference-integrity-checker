@@ -117,7 +117,7 @@ Hirsch J.E. (2005): An index to quantify an individual's scientific research out
 <script>
 "use strict";
 const MAILTO = "danielaristo@yahoo.com";
-const UMBRAL_TITULO = 0.60, UMBRAL_SIN_AUTOR = 0.95, MIN_TOKENS = 3, TOL_ANIO = 2, CONCURRENCY = 4;
+const UMBRAL_TITULO = 0.60, UMBRAL_SIN_AUTOR = 0.95, MIN_TOKENS = 3, TOL_ANIO = 2, CONCURRENCY = 3;
 
 const EXAMPLE = [
   "Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.",
@@ -148,14 +148,44 @@ const extractDOI = ref => { const m = ref.match(/10\.\d{4,9}\/[^\s,;"']+/); retu
 const extractYear = ref => { const m = ref.match(/\b(19|20)\d{2}\b/); return m ? parseInt(m[0],10) : null; };
 
 // ---------- API ----------
-async function getJSON(url){ try{ const r = await fetch(url,{headers:{"Accept":"application/json"}}); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
+const sleep = ms => new Promise(res => setTimeout(res, ms));
+async function getJSON(url, retries=2){
+  for(let attempt=0; attempt<=retries; attempt++){
+    try{
+      const r = await fetch(url,{headers:{"Accept":"application/json"}});
+      if(r.status===429 || r.status===503){
+        if(attempt===retries) return null;
+        const ra = parseFloat(r.headers.get("Retry-After"));
+        await sleep(!isNaN(ra) ? Math.min(ra*1000, 3000) : Math.min(500*Math.pow(2,attempt+1), 3000));
+        continue;
+      }
+      if(!r.ok) return null;
+      return await r.json();
+    }catch(e){
+      if(attempt===retries) return null;
+      await sleep(Math.min(500*Math.pow(2,attempt+1), 3000));
+    }
+  }
+  return null;
+}
 const crossrefByDOI = async doi => { const d = await getJSON("https://api.crossref.org/works/"+encodeURIComponent(doi)+"?mailto="+MAILTO); return d ? d.message : null; };
 const crossrefSearch = async ref => { const d = await getJSON("https://api.crossref.org/works?query.bibliographic="+encodeURIComponent(ref)+"&rows=3&select=title,issued,DOI,author&mailto="+MAILTO); return d ? (d.message.items||[]) : []; };
-const openAlexSearch = async txt => { const d = await getJSON("https://api.openalex.org/works?search="+encodeURIComponent(txt)+"&per-page=5&select=display_name,publication_year,doi,is_retracted,authorships&mailto="+MAILTO); return d ? (d.results||[]) : []; };
-async function openAlexRetractedByDOI(doi){ const d = await getJSON("https://api.openalex.org/works/https://doi.org/"+doi+"?select=is_retracted&mailto="+MAILTO); return d ? !!d.is_retracted : false; }
+// openAlexSearchRaw distinguishes "queried but zero results" ([]) from "request failed" (null),
+// so callers can tell confirmed-negative apart from unknown/rate-limited.
+const openAlexSearchRaw = async txt => { const d = await getJSON("https://api.openalex.org/works?search="+encodeURIComponent(txt)+"&per-page=5&select=display_name,publication_year,doi,is_retracted,authorships&mailto="+MAILTO); return d ? (d.results||[]) : null; };
+const openAlexSearch = async txt => (await openAlexSearchRaw(txt)) || [];
+// Each retraction check returns true / false / null("unknown" — the API call failed or was
+// rate-limited). Silently treating "unknown" as "false" would itself be exactly the kind of
+// false-negative this tool exists to catch, so callers must surface null explicitly.
+async function openAlexRetractedByDOI(doi){
+  const d = await getJSON("https://api.openalex.org/works/https://doi.org/"+doi+"?select=is_retracted&mailto="+MAILTO);
+  return d ? !!d.is_retracted : null;
+}
 async function openAlexRetractedByTitle(title, year){
   const q = title.replace(/[,:|&]/g," ");
-  for(const c of await openAlexSearch(q)){
+  const results = await openAlexSearchRaw(q);
+  if(results === null) return null;
+  for(const c of results){
     if(titleScore(title, c.display_name||"") >= 0.9){
       if(year && c.publication_year && Math.abs(year - c.publication_year) > 1) continue;
       if(c.is_retracted) return true;
@@ -199,10 +229,17 @@ async function verify(ref){
     res.verdict="METADATA"; res.detail=`Cited year (${res.yearRef}) does not match the registered year (${res.yearFound}).`;
   } else res.verdict="VERIFIED";
 
-  let retr=false;
-  if(res.doi) retr = await openAlexRetractedByDOI(res.doi);
-  if(!retr && res.titleFound) retr = await openAlexRetractedByTitle(res.titleFound, res.yearFound);
-  if(retr){ res.verdict="RETRACTED"; res.detail="OpenAlex marks this work as retracted (matched via duplicate-DOI check)."; }
+  // true = retracted, false = confirmed not retracted, null = check failed (rate-limited/offline).
+  let retr=false, uncertain=false;
+  if(res.doi){ const r = await openAlexRetractedByDOI(res.doi); if(r===null) uncertain=true; else retr=r; }
+  if(!retr && res.titleFound){ const r = await openAlexRetractedByTitle(res.titleFound, res.yearFound); if(r===null) uncertain=true; else if(r) retr=true; }
+  if(retr){
+    res.verdict="RETRACTED"; res.detail="OpenAlex marks this work as retracted (matched via duplicate-DOI check).";
+  } else if(uncertain){
+    // Never silently report "clean" when the retraction check itself failed — that would be
+    // exactly the false-negative failure mode this tool is meant to expose.
+    res.detail = (res.detail ? res.detail+" " : "") + "Retraction status could not be confirmed (source API rate-limited) — verify manually before relying on this reference.";
+  }
   return res;
 }
 
