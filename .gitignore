@@ -6,3 +6,4 @@ reporte_muestra_real*.csv
 reporte.csv
 .DS_Store
 __pycache__/
+.s2_key

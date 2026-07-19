@@ -34,21 +34,20 @@ import urllib.request
 from verificador import emparejamiento_aceptable, extraer_anio, normalizar
 
 USER_AGENT = "VerificadorReferencias/0.3 (mailto:danielaristo@yahoo.com)"
-PAUSA_SEG = 8.0   # S2 sin clave comparte cuota global: ir muy despacio
-API_KEY = os.environ.get("S2_API_KEY", "")  # con clave gratuita: 1 req/s garantizada
+API_KEY = os.environ.get("S2_API_KEY", "")
+if not API_KEY:
+    _ruta_clave = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".s2_key")
+    if os.path.exists(_ruta_clave):
+        API_KEY = open(_ruta_clave).read().strip()
+# Con clave: 1 req/s dedicada (acumulada entre endpoints). Sin clave: cuota
+# global compartida, ir muy despacio.
+PAUSA_SEG = 1.1 if API_KEY else 8.0
+PAUSA_INTERNA = 1.1 if API_KEY else 1.5
 CAMPOS = ["referencia", "doi_articulo_citante", "veredicto", "titulo_s2",
           "anio_s2", "venue_s2", "ids_s2", "score_titulo"]
 
 
-def s2_busqueda(texto, filas=5, max_reintentos=3):
-    """
-    Fallar rápido: pocos reintentos y esperas cortas. Bajo throttling
-    sostenido conviene marcar ERROR_API y avanzar; las fallidas se
-    repescan en pasadas posteriores con --continuar.
-    """
-    url = ("https://api.semanticscholar.org/graph/v1/paper/search?query=%s&limit=%d"
-           "&fields=title,year,venue,authors,externalIds"
-           % (urllib.parse.quote(texto[:300]), filas))
+def _s2_get(url, max_reintentos=3):
     cabeceras = {"User-Agent": USER_AGENT}
     if API_KEY:
         cabeceras["x-api-key"] = API_KEY
@@ -69,6 +68,38 @@ def s2_busqueda(texto, filas=5, max_reintentos=3):
         except Exception:
             time.sleep(10)
     return None  # agotó reintentos
+
+
+CAMPOS_API = "title,year,venue,authors,externalIds"
+
+
+def s2_match(texto):
+    """
+    Endpoint /paper/search/match: devuelve el mejor emparejamiento de título
+    (cuota separada de /paper/search, suele estar más despejada). 404 = sin match.
+    """
+    url = ("https://api.semanticscholar.org/graph/v1/paper/search/match?query=%s&fields=%s"
+           % (urllib.parse.quote(texto[:300]), CAMPOS_API))
+    return _s2_get(url)
+
+
+def s2_busqueda(texto, filas=5, max_reintentos=3):
+    """
+    Fallar rápido: pocos reintentos y esperas cortas. Bajo throttling
+    sostenido conviene marcar ERROR_API y avanzar; las fallidas se
+    repescan en pasadas posteriores con --continuar.
+    """
+    url = ("https://api.semanticscholar.org/graph/v1/paper/search?query=%s&limit=%d&fields=%s"
+           % (urllib.parse.quote(texto[:300]), filas, CAMPOS_API))
+    return _s2_get(url, max_reintentos)
+
+
+def s2_consulta(texto):
+    """Intenta primero el endpoint match; si su cuota falla, cae a search."""
+    r = s2_match(texto)
+    if r is not None:
+        return r
+    return s2_busqueda(texto)
 
 
 def segmentos_consulta(ref):
@@ -101,7 +132,7 @@ def verificar(ref):
     mejor, mejor_score = None, 0.0
     hubo_respuesta = False
     for consulta in segmentos_consulta(ref):
-        resultados = s2_busqueda(consulta)
+        resultados = s2_consulta(consulta)
         if resultados is None:
             continue
         hubo_respuesta = True
@@ -112,7 +143,7 @@ def verificar(ref):
                 mejor, mejor_score = cand, s
         if mejor is not None:
             break  # ya hay match aceptable; no gastar otra consulta
-        time.sleep(1.5)
+        time.sleep(PAUSA_INTERNA)
     if not hubo_respuesta:
         return "ERROR_API", {}
     if mejor is None:

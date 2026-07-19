@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference Integrity Checker</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --surface:#ffffff; --surface-2:#f1f0ec; --text:#1a1a18; --muted:#6b6b66;
+    --border:#e2e1db; --accent:#1f4e79; --accent-fg:#ffffff;
+    --ok-bg:#e7f4ec; --ok-fg:#1c6b3f; --warn-bg:#fdf3d8; --warn-fg:#8a6100;
+    --danger-bg:#fbe9e9; --danger-fg:#a02020; --neutral-bg:#eeedf0; --neutral-fg:#565660;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#17171a; --surface:#212126; --surface-2:#2a2a30; --text:#ececef; --muted:#a0a0a8;
+      --border:#34343c; --accent:#5b9bd5; --accent-fg:#0a0a0c;
+      --ok-bg:#163323; --ok-fg:#7fd6a1; --warn-bg:#3a2f12; --warn-fg:#f0c65b;
+      --danger-bg:#3a1c1c; --danger-fg:#f09595; --neutral-bg:#2c2c33; --neutral-fg:#b4b4bc;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.55;font-size:15px}
+  .wrap{max-width:860px;margin:0 auto;padding:2rem 1.25rem 4rem}
+  header h1{font-size:1.5rem;margin:0 0 .35rem;display:flex;align-items:center;gap:.5rem}
+  header p{color:var(--muted);margin:0 0 1.4rem;max-width:62ch}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.25rem}
+  label{font-weight:600;font-size:.9rem;display:block;margin-bottom:.5rem}
+  textarea{width:100%;min-height:170px;resize:vertical;border:1px solid var(--border);border-radius:10px;
+    padding:.75rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
+    background:var(--surface-2);color:var(--text);line-height:1.5}
+  .row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.85rem}
+  button{font:inherit;font-weight:600;border-radius:9px;padding:.6rem 1.1rem;cursor:pointer;border:1px solid transparent}
+  .btn-primary{background:var(--accent);color:var(--accent-fg)}
+  .btn-primary:disabled{opacity:.5;cursor:not-allowed}
+  .btn-ghost{background:transparent;color:var(--text);border-color:var(--border)}
+  .btn-ghost:hover{background:var(--surface-2)}
+  .link{color:var(--muted);font-size:.82rem;text-decoration:none;border:none;background:none;cursor:pointer;padding:0}
+  .link:hover{color:var(--accent);text-decoration:underline}
+  .progress{height:6px;background:var(--surface-2);border-radius:99px;overflow:hidden;margin-top:1.1rem;display:none}
+  .progress.on{display:block}
+  .bar{height:100%;width:0;background:var(--accent);transition:width .2s ease}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.6rem;margin:1.3rem 0 .4rem;display:none}
+  .stats.on{display:grid}
+  .stat{border-radius:10px;padding:.7rem .8rem}
+  .stat b{font-size:1.5rem;font-weight:700;display:block;line-height:1.1}
+  .stat span{font-size:.74rem;font-weight:600}
+  .s-ok{background:var(--ok-bg);color:var(--ok-fg)} .s-warn{background:var(--warn-bg);color:var(--warn-fg)}
+  .s-danger{background:var(--danger-bg);color:var(--danger-fg)} .s-neutral{background:var(--neutral-bg);color:var(--neutral-fg)}
+  .results{margin-top:1rem;display:flex;flex-direction:column;gap:.55rem}
+  .item{display:flex;gap:.7rem;align-items:flex-start;background:var(--surface);border:1px solid var(--border);
+    border-radius:11px;padding:.7rem .85rem}
+  .dot{flex:0 0 auto;width:20px;height:20px;border-radius:50%;margin-top:.15rem;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:800;color:#fff}
+  .d-ok{background:#2e9e63} .d-warn{background:#c79212} .d-danger{background:#c0392b} .d-neutral{background:#8a8a94} .d-run{background:var(--muted)}
+  .item .body{min-width:0;flex:1}
+  .item .ref{font-size:.85rem;margin:0}
+  .item .meta{font-size:.78rem;color:var(--muted);margin:.2rem 0 0;word-break:break-word}
+  .item a{color:var(--accent)}
+  .pill{flex:0 0 auto;font-size:.68rem;font-weight:700;padding:.2rem .55rem;border-radius:99px;white-space:nowrap;height:fit-content}
+  .p-ok{background:var(--ok-bg);color:var(--ok-fg)} .p-warn{background:var(--warn-bg);color:var(--warn-fg)}
+  .p-danger{background:var(--danger-bg);color:var(--danger-fg)} .p-neutral{background:var(--neutral-bg);color:var(--neutral-fg)}
+  footer{margin-top:2.5rem;color:var(--muted);font-size:.78rem;border-top:1px solid var(--border);padding-top:1.1rem}
+  footer a{color:var(--accent)}
+  .disc{background:var(--warn-bg);color:var(--warn-fg);border-radius:10px;padding:.6rem .8rem;font-size:.8rem;margin-top:1rem}
+  @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🔎 Reference Integrity Checker</h1>
+    <p>Paste a bibliography — one reference per line — and check each entry against open scholarly
+       databases: does it exist, do the metadata match, and has it been retracted. Everything runs in
+       your browser; no reference ever leaves your device except as a query to public APIs.</p>
+  </header>
+
+  <div class="card">
+    <label for="refs">References (one per line)</label>
+    <textarea id="refs" placeholder="Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.
+Hirsch J.E. (2005): An index to quantify an individual's scientific research output. PNAS, 102: 16569-16572."></textarea>
+    <div class="row">
+      <button id="run" class="btn-primary">Verify references</button>
+      <button id="sample" class="btn-ghost">Load example</button>
+      <button id="exportBtn" class="link" style="display:none">⬇ Export CSV</button>
+      <span id="status" style="color:var(--muted);font-size:.82rem"></span>
+    </div>
+    <div class="progress" id="prog"><div class="bar" id="bar"></div></div>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="stat s-ok"><b id="c-ok">0</b><span>Verified</span></div>
+    <div class="stat s-warn"><b id="c-warn">0</b><span>Metadata issue</span></div>
+    <div class="stat s-danger"><b id="c-danger">0</b><span>Retracted</span></div>
+    <div class="stat s-neutral"><b id="c-neutral">0</b><span>Not verifiable</span></div>
+  </div>
+
+  <div class="results" id="results"></div>
+
+  <div class="disc" id="disc" style="display:none">
+    <b>How to read this.</b> “Not verifiable” does not mean “fabricated.” It means the reference was not
+    found in Crossref or OpenAlex — which also happens for legitimate books, reports, and articles in
+    regional or non-indexed journals. Treat it as a prompt to check by hand, not a verdict. This web
+    version queries two databases; the research pipeline adds a third (Semantic Scholar) and human review.
+  </div>
+
+  <footer>
+    Sources: <a href="https://www.crossref.org" target="_blank" rel="noopener">Crossref</a> and
+    <a href="https://openalex.org" target="_blank" rel="noopener">OpenAlex</a> (free, no key).
+    Open-source and part of an ongoing scientometric study on citation integrity —
+    <a href="https://github.com/danielaristo/reference-integrity-checker" target="_blank" rel="noopener">code &amp; method on GitHub</a>.
+    Verdicts are advisory, never definitive.
+  </footer>
+</div>
+
+<script>
+"use strict";
+const MAILTO = "danielaristo@yahoo.com";
+const UMBRAL_TITULO = 0.60, UMBRAL_SIN_AUTOR = 0.95, MIN_TOKENS = 3, TOL_ANIO = 2, CONCURRENCY = 4;
+
+const EXAMPLE = [
+  "Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.",
+  "Hirsch J.E. (2005): An index to quantify an individual's scientific research output. PNAS, 102: 16569-16572.",
+  "Aria M., Cuccurullo C. (2017): bibliometrix: An R-tool for comprehensive science mapping analysis. Journal of Informetrics, 11: 959-975.",
+  "van Eck N.J., Waltman L. (2010): Software survey: VOSviewer, a computer program for bibliometric mapping. Scientometrics, 84: 523-538.",
+  "Hirsch J.E. (2011): An index to quantify an individual's scientific research output. PNAS, 102: 16569-16572.",
+  "García-Martínez J., Chen L. (2021): Semantic drift in citation cascades: a large-scale longitudinal analysis. Journal of Informetrics, 15: 101-118.",
+  "Wakefield A.J. et al. (1998): Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and pervasive developmental disorder in children. The Lancet, 351: 637-641."
+];
+
+// ---------- text utils ----------
+const norm = s => s.normalize("NFKD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/[^a-z0-9 ]+/g," ").replace(/\s+/g," ").trim();
+const sigTokens = t => norm(t).split(" ").filter(w => w.length > 3);
+function titleScore(ref, title){
+  const toks = sigTokens(title); if(!toks.length) return 0;
+  const r = " " + norm(ref) + " ";
+  return toks.filter(t => r.includes(" "+t+" ")).length / toks.length;
+}
+const surnamePresent = (ref, s) => { if(!s) return false; const n = norm(s); return !!n && (" "+norm(ref)+" ").includes(" "+n+" "); };
+function matchAcceptable(ref, title, surname){
+  const s = titleScore(ref, title), n = sigTokens(title).length, aut = surnamePresent(ref, surname);
+  if(n < MIN_TOKENS) return {ok:(s>=0.99 && aut), s};
+  if(surname && !aut) return {ok:(s>=UMBRAL_SIN_AUTOR), s};
+  return {ok:(s>=UMBRAL_TITULO), s};
+}
+const extractDOI = ref => { const m = ref.match(/10\.\d{4,9}\/[^\s,;"']+/); return m ? m[0].replace(/[.)\]]+$/,"") : null; };
+const extractYear = ref => { const m = ref.match(/\b(19|20)\d{2}\b/); return m ? parseInt(m[0],10) : null; };
+
+// ---------- API ----------
+async function getJSON(url){ try{ const r = await fetch(url,{headers:{"Accept":"application/json"}}); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
+const crossrefByDOI = async doi => { const d = await getJSON("https://api.crossref.org/works/"+encodeURIComponent(doi)+"?mailto="+MAILTO); return d ? d.message : null; };
+const crossrefSearch = async ref => { const d = await getJSON("https://api.crossref.org/works?query.bibliographic="+encodeURIComponent(ref)+"&rows=3&select=title,issued,DOI,author&mailto="+MAILTO); return d ? (d.message.items||[]) : []; };
+const openAlexSearch = async txt => { const d = await getJSON("https://api.openalex.org/works?search="+encodeURIComponent(txt)+"&per-page=5&select=display_name,publication_year,doi,is_retracted,authorships&mailto="+MAILTO); return d ? (d.results||[]) : []; };
+async function openAlexRetractedByDOI(doi){ const d = await getJSON("https://api.openalex.org/works/https://doi.org/"+doi+"?select=is_retracted&mailto="+MAILTO); return d ? !!d.is_retracted : false; }
+async function openAlexRetractedByTitle(title, year){
+  const q = title.replace(/[,:|&]/g," ");
+  for(const c of await openAlexSearch(q)){
+    if(titleScore(title, c.display_name||"") >= 0.9){
+      if(year && c.publication_year && Math.abs(year - c.publication_year) > 1) continue;
+      if(c.is_retracted) return true;
+    }
+  } return false;
+}
+const cfCross = it => ({title:(it.title&&it.title[0])||"", year:(it.issued&&it.issued["date-parts"]&&it.issued["date-parts"][0]&&it.issued["date-parts"][0][0])||null, doi:it.DOI||"", surname:(it.author&&it.author[0]&&it.author[0].family)||null});
+const oaSurname = c => { const a = c.authorships&&c.authorships[0]; if(!a||!a.author) return null; const p = (a.author.display_name||"").split(" "); return p.length?p[p.length-1]:null; };
+
+// ---------- cascade ----------
+async function verify(ref){
+  const res = {ref, verdict:"", source:"", doi:"", titleFound:"", yearRef:extractYear(ref), yearFound:"", score:"", detail:""};
+  const doiIn = extractDOI(ref);
+  let title, year, doi, surname;
+
+  if(doiIn){
+    const it = await crossrefByDOI(doiIn);
+    if(!it){ res.verdict="NOT_VERIFIABLE"; res.detail="The cited DOI does not resolve in Crossref (possible fabrication)."; return res; }
+    ({title,year,doi,surname} = cfCross(it)); res.source="Crossref";
+    res.doi=doi; res.titleFound=title; res.yearFound=year; res.score=titleScore(ref,title).toFixed(2);
+  } else {
+    let best=null, bestScore=0;
+    for(const it of await crossrefSearch(ref)){
+      const c = cfCross(it); const {ok,s} = matchAcceptable(ref, c.title, c.surname);
+      if(ok && s>bestScore){ best={...c, source:"Crossref"}; bestScore=s; }
+    }
+    if(!best){
+      for(const c of await openAlexSearch(ref)){
+        const cand = {title:c.display_name||"", year:c.publication_year, doi:(c.doi||"").replace("https://doi.org/",""), surname:oaSurname(c), retracted:!!c.is_retracted};
+        const {ok,s} = matchAcceptable(ref, cand.title, cand.surname);
+        if(ok && s>bestScore){ best={...cand, source:"OpenAlex"}; bestScore=s; }
+      }
+    }
+    if(!best){ res.verdict="NOT_VERIFIABLE"; res.detail="Not found in Crossref or OpenAlex — possible fabrication, or legitimate non-indexed / gray literature."; return res; }
+    ({title,year,doi,surname} = best); res.source=best.source;
+    res.doi=doi||""; res.titleFound=title; res.yearFound=year; res.score=bestScore.toFixed(2);
+    if(best.retracted){ res.verdict="RETRACTED"; res.detail="OpenAlex marks this work as retracted."; return res; }
+  }
+
+  if(res.yearRef && res.yearFound && Math.abs(res.yearRef - res.yearFound) > TOL_ANIO){
+    res.verdict="METADATA"; res.detail=`Cited year (${res.yearRef}) does not match the registered year (${res.yearFound}).`;
+  } else res.verdict="VERIFIED";
+
+  let retr=false;
+  if(res.doi) retr = await openAlexRetractedByDOI(res.doi);
+  if(!retr && res.titleFound) retr = await openAlexRetractedByTitle(res.titleFound, res.yearFound);
+  if(retr){ res.verdict="RETRACTED"; res.detail="OpenAlex marks this work as retracted (matched via duplicate-DOI check)."; }
+  return res;
+}
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+const VMETA = {
+  VERIFIED:{dot:"d-ok",sym:"✓",pill:"p-ok",label:"Verified"},
+  METADATA:{dot:"d-warn",sym:"!",pill:"p-warn",label:"Year mismatch"},
+  RETRACTED:{dot:"d-danger",sym:"✕",pill:"p-danger",label:"Retracted"},
+  NOT_VERIFIABLE:{dot:"d-neutral",sym:"?",pill:"p-neutral",label:"Not verifiable"}
+};
+let lastResults = [];
+
+function rowHTML(idx, r){
+  const m = r.verdict ? VMETA[r.verdict] : {dot:"d-run",sym:"…",pill:"p-neutral",label:"Checking…"};
+  let meta = "";
+  if(r.detail) meta += r.detail;
+  if(r.doi) meta += `${meta?" · ":""}<a href="https://doi.org/${r.doi}" target="_blank" rel="noopener">doi:${r.doi}</a>`;
+  if(r.verdict==="NOT_VERIFIABLE") meta += `${meta?" · ":""}<a href="https://scholar.google.com/scholar?q=${encodeURIComponent(r.ref.slice(0,180))}" target="_blank" rel="noopener">search Google Scholar</a>`;
+  return `<div class="dot ${m.dot}">${m.sym}</div>
+    <div class="body"><p class="ref">${escapeHTML(r.ref)}</p>${meta?`<p class="meta">${meta}</p>`:""}</div>
+    <span class="pill ${m.pill}">${m.label}</span>`;
+}
+const escapeHTML = s => s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function run(){
+  const lines = $("refs").value.split("\n").map(s=>s.trim()).filter(s=>s && !s.startsWith("#"));
+  if(!lines.length){ $("status").textContent="Paste at least one reference."; return; }
+  $("run").disabled=true; $("sample").disabled=true; $("exportBtn").style.display="none";
+  $("results").innerHTML=""; $("stats").classList.remove("on"); $("disc").style.display="none";
+  $("prog").classList.add("on"); $("bar").style.width="0%";
+  const counts={VERIFIED:0,METADATA:0,RETRACTED:0,NOT_VERIFIABLE:0};
+  lastResults = new Array(lines.length);
+
+  // render placeholder rows
+  const nodes = lines.map((ref,i)=>{ const el=document.createElement("div"); el.className="item"; el.id="it"+i; el.innerHTML=rowHTML(i,{ref,verdict:""}); $("results").appendChild(el); return el; });
+
+  let done=0, next=0;
+  async function worker(){
+    while(next < lines.length){
+      const i = next++;
+      const r = await verify(lines[i]);
+      lastResults[i]=r; counts[r.verdict]=(counts[r.verdict]||0)+1;
+      nodes[i].innerHTML = rowHTML(i, r);
+      done++; $("bar").style.width = Math.round(done/lines.length*100)+"%";
+      $("status").textContent = `Checked ${done} / ${lines.length}`;
+      updateStats(counts);
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(CONCURRENCY,lines.length)}, worker));
+
+  $("stats").classList.add("on"); $("disc").style.display="block";
+  $("prog").classList.remove("on"); $("status").textContent = `Done — ${lines.length} references checked.`;
+  $("run").disabled=false; $("sample").disabled=false; $("exportBtn").style.display="inline";
+}
+function updateStats(c){ $("c-ok").textContent=c.VERIFIED||0; $("c-warn").textContent=c.METADATA||0; $("c-danger").textContent=c.RETRACTED||0; $("c-neutral").textContent=c.NOT_VERIFIABLE||0; }
+
+function exportCSV(){
+  const head=["reference","verdict","source","doi","title_found","year_cited","year_found","title_score","detail"];
+  const rows=lastResults.filter(Boolean).map(r=>[r.ref,r.verdict,r.source,r.doi,r.titleFound,r.yearRef||"",r.yearFound||"",r.score,r.detail]
+    .map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+  const blob=new Blob(["﻿"+head.join(",")+"\n"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="reference_check.csv"; a.click();
+}
+
+$("run").addEventListener("click", run);
+$("sample").addEventListener("click", ()=>{ $("refs").value = EXAMPLE.join("\n"); });
+$("exportBtn").addEventListener("click", exportCSV);
+</script>
+</body>
+</html>
