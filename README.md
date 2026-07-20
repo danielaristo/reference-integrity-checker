@@ -2,6 +2,8 @@
 
 A free, open tool to verify the integrity of bibliographic references at scale — and the research pipeline behind an ongoing scientometric study on fabricated ("hallucinated") and unverifiable references in the scholarly literature.
 
+**Try it live: [reftruth.com](https://reftruth.com)** — no installation, no account, runs entirely in your browser.
+
 ## What it does
 
 Given a plain-text list of references (one per line), the checker verifies each one in cascade against open scholarly databases:
