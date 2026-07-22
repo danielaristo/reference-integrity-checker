@@ -7,3 +7,7 @@ reporte.csv
 .DS_Store
 __pycache__/
 .s2_key
+
+# Manuscript drafts (under journal review, kept local only)
+Manuscrito_*.docx
+~$*.docx
