@@ -64,6 +64,8 @@
   .p-danger{background:var(--danger-bg);color:var(--danger-fg)} .p-neutral{background:var(--neutral-bg);color:var(--neutral-fg)}
   footer{margin-top:2.5rem;color:var(--muted);font-size:.78rem;border-top:1px solid var(--border);padding-top:1.1rem}
   footer a{color:var(--accent)}
+  input[type=text]{width:100%;border:1px solid var(--border);border-radius:10px;padding:.55rem .7rem;
+    background:var(--surface-2);color:var(--text);font:inherit;font-size:.88rem;margin-bottom:.9rem}
   .disc{background:var(--warn-bg);color:var(--warn-fg);border-radius:10px;padding:.6rem .8rem;font-size:.8rem;margin-top:1rem}
   @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
   .print-report{display:none}
@@ -107,6 +109,8 @@
   </header>
 
   <div class="card">
+    <label for="docTitle">Document title (optional) — used as the report heading and PDF file name</label>
+    <input type="text" id="docTitle" placeholder="e.g. Gotchi Financiero manuscript v13">
     <label for="refs">References (one per line)</label>
     <textarea id="refs" placeholder="Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.
 Hirsch J.E. (2005): An index to quantify an individual's scientific research output. PNAS, 102: 16569-16572."></textarea>
@@ -343,11 +347,18 @@ function exportCSV(){
 const PRINT_ROWCLASS = {VERIFIED:"row-ok", METADATA:"row-warn", RETRACTED:"row-danger", NOT_VERIFIABLE:"row-neutral"};
 const PRINT_BADGE = {VERIFIED:"b-ok", METADATA:"b-warn", RETRACTED:"b-danger", NOT_VERIFIABLE:"b-neutral"};
 const PRINT_TEXT = {VERIFIED:"t-ok", METADATA:"t-warn", RETRACTED:"t-danger", NOT_VERIFIABLE:"t-neutral"};
+const ORIGINAL_TITLE = document.title;
+function slugify(s){
+  return s.trim().replace(/[\\/:*?"<>|]+/g,"").replace(/\s+/g,"_").slice(0,80);
+}
 function buildPrintReport(){
   const rows = lastResults.filter(Boolean);
   const counts = {VERIFIED:0,METADATA:0,RETRACTED:0,NOT_VERIFIABLE:0};
   rows.forEach(r => counts[r.verdict] = (counts[r.verdict]||0)+1);
   const stamp = new Date().toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
+  const docTitle = $("docTitle").value.trim();
+  const heading = docTitle ? escapeHTML(docTitle) : "Reference Integrity Report";
+  const subline = docTitle ? "Reference Integrity Report — " : "";
   const trs = rows.map((r,i) => {
     const label = (VMETA[r.verdict]||{}).label || r.verdict;
     const doi = r.doi ? "doi:"+escapeHTML(r.doi) : "—";
@@ -356,8 +367,8 @@ function buildPrintReport(){
     return `<tr class="${rowClass}"><td>${i+1}</td><td>${escapeHTML(r.ref)}</td><td><span class="badge ${badgeClass}">${label}</span></td><td>${escapeHTML(r.source||"—")}</td><td>${doi}</td><td>${escapeHTML(r.detail||"")}</td></tr>`;
   }).join("");
   $("printReport").innerHTML = `
-    <h1>Reference Integrity Report</h1>
-    <div class="meta">Generated ${stamp} — reftruth.com — ${rows.length} reference${rows.length===1?"":"s"} checked</div>
+    <h1>${heading}</h1>
+    <div class="meta">${subline}Generated ${stamp} — reftruth.com — ${rows.length} reference${rows.length===1?"":"s"} checked</div>
     <div class="summary">
       <span><b class="${PRINT_TEXT.VERIFIED}">${counts.VERIFIED||0}</b> verified</span>
       <span><b class="${PRINT_TEXT.METADATA}">${counts.METADATA||0}</b> metadata issue</span>
@@ -373,6 +384,11 @@ function buildPrintReport(){
 function exportPDF(){
   if(!lastResults.filter(Boolean).length) return;
   buildPrintReport();
+  const docTitle = $("docTitle").value.trim();
+  const dateStamp = new Date().toISOString().slice(0,10);
+  document.title = docTitle ? slugify(docTitle) : `Reference_Integrity_Report_${dateStamp}`;
+  function restoreTitle(){ document.title = ORIGINAL_TITLE; window.removeEventListener("afterprint", restoreTitle); }
+  window.addEventListener("afterprint", restoreTitle);
   window.print();
 }
 
