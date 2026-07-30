@@ -66,6 +66,35 @@
   footer a{color:var(--accent)}
   .disc{background:var(--warn-bg);color:var(--warn-fg);border-radius:10px;padding:.6rem .8rem;font-size:.8rem;margin-top:1rem}
   @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
+  .print-report{display:none}
+  @media print{
+    body *{visibility:hidden}
+    .print-report, .print-report *{visibility:visible}
+    .print-report{display:block;position:absolute;left:0;top:0;width:100%;color:#111;background:#fff;padding:0 1.2cm;
+      -webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .print-report h1{font-size:1.3rem;margin:0 0 .2rem}
+    .print-report .meta{color:#555;font-size:.8rem;margin:0 0 .9rem}
+    .print-report .summary{display:flex;gap:1.2rem;margin:0 0 1.1rem;font-size:.8rem}
+    .print-report .summary b{font-size:1.05rem}
+    .print-report table{width:100%;border-collapse:collapse;font-size:.72rem}
+    .print-report th,.print-report td{border:1px solid #ccc;padding:.32rem .45rem;text-align:left;vertical-align:top}
+    .print-report th{background:#eee}
+    .print-report tr{page-break-inside:avoid}
+    .print-report tr.row-ok td:first-child{border-left:4px solid #2e9e63}
+    .print-report tr.row-warn td:first-child{border-left:4px solid #c79212}
+    .print-report tr.row-danger td:first-child{border-left:4px solid #c0392b}
+    .print-report tr.row-neutral td:first-child{border-left:4px solid #8a8a94}
+    .print-report .badge{display:inline-block;padding:.12rem .55rem;border-radius:99px;font-weight:700;font-size:.68rem;color:#fff;white-space:nowrap}
+    .print-report .b-ok{background:#2e9e63}
+    .print-report .b-warn{background:#c79212}
+    .print-report .b-danger{background:#c0392b}
+    .print-report .b-neutral{background:#8a8a94}
+    .print-report .summary .t-ok{color:#1c6b3f}
+    .print-report .summary .t-warn{color:#8a6100}
+    .print-report .summary .t-danger{color:#a02020}
+    .print-report .summary .t-neutral{color:#565660}
+    .print-report footer{margin-top:1rem;font-size:.68rem;color:#555;border-top:1px solid #ccc;padding-top:.5rem}
+  }
 </style>
 </head>
 <body>
@@ -85,6 +114,7 @@ Hirsch J.E. (2005): An index to quantify an individual's scientific research out
       <button id="run" class="btn-primary">Verify references</button>
       <button id="sample" class="btn-ghost">Load example</button>
       <button id="exportBtn" class="link" style="display:none">⬇ Export CSV</button>
+      <button id="exportPdfBtn" class="link" style="display:none" title="Opens your browser's print dialog — choose &quot;Save as PDF&quot; as the destination">🖨 Export PDF report</button>
       <span id="status" style="color:var(--muted);font-size:.82rem"></span>
     </div>
     <div class="progress" id="prog"><div class="bar" id="bar"></div></div>
@@ -98,6 +128,8 @@ Hirsch J.E. (2005): An index to quantify an individual's scientific research out
   </div>
 
   <div class="results" id="results"></div>
+
+  <div class="print-report" id="printReport"></div>
 
   <div class="disc" id="disc" style="display:none">
     <b>How to read this.</b> “Not verifiable” does not mean “fabricated.” It means the reference was not
@@ -295,7 +327,8 @@ async function run(){
 
   $("stats").classList.add("on"); $("disc").style.display="block";
   $("prog").classList.remove("on"); $("status").textContent = `Done — ${lines.length} references checked.`;
-  $("run").disabled=false; $("sample").disabled=false; $("exportBtn").style.display="inline";
+  $("run").disabled=false; $("sample").disabled=false;
+  $("exportBtn").style.display="inline"; $("exportPdfBtn").style.display="inline";
 }
 function updateStats(c){ $("c-ok").textContent=c.VERIFIED||0; $("c-warn").textContent=c.METADATA||0; $("c-danger").textContent=c.RETRACTED||0; $("c-neutral").textContent=c.NOT_VERIFIABLE||0; }
 
@@ -307,9 +340,46 @@ function exportCSV(){
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="reference_check.csv"; a.click();
 }
 
+const PRINT_ROWCLASS = {VERIFIED:"row-ok", METADATA:"row-warn", RETRACTED:"row-danger", NOT_VERIFIABLE:"row-neutral"};
+const PRINT_BADGE = {VERIFIED:"b-ok", METADATA:"b-warn", RETRACTED:"b-danger", NOT_VERIFIABLE:"b-neutral"};
+const PRINT_TEXT = {VERIFIED:"t-ok", METADATA:"t-warn", RETRACTED:"t-danger", NOT_VERIFIABLE:"t-neutral"};
+function buildPrintReport(){
+  const rows = lastResults.filter(Boolean);
+  const counts = {VERIFIED:0,METADATA:0,RETRACTED:0,NOT_VERIFIABLE:0};
+  rows.forEach(r => counts[r.verdict] = (counts[r.verdict]||0)+1);
+  const stamp = new Date().toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
+  const trs = rows.map((r,i) => {
+    const label = (VMETA[r.verdict]||{}).label || r.verdict;
+    const doi = r.doi ? "doi:"+escapeHTML(r.doi) : "—";
+    const rowClass = PRINT_ROWCLASS[r.verdict] || "row-neutral";
+    const badgeClass = PRINT_BADGE[r.verdict] || "b-neutral";
+    return `<tr class="${rowClass}"><td>${i+1}</td><td>${escapeHTML(r.ref)}</td><td><span class="badge ${badgeClass}">${label}</span></td><td>${escapeHTML(r.source||"—")}</td><td>${doi}</td><td>${escapeHTML(r.detail||"")}</td></tr>`;
+  }).join("");
+  $("printReport").innerHTML = `
+    <h1>Reference Integrity Report</h1>
+    <div class="meta">Generated ${stamp} — reftruth.com — ${rows.length} reference${rows.length===1?"":"s"} checked</div>
+    <div class="summary">
+      <span><b class="${PRINT_TEXT.VERIFIED}">${counts.VERIFIED||0}</b> verified</span>
+      <span><b class="${PRINT_TEXT.METADATA}">${counts.METADATA||0}</b> metadata issue</span>
+      <span><b class="${PRINT_TEXT.RETRACTED}">${counts.RETRACTED||0}</b> retracted</span>
+      <span><b class="${PRINT_TEXT.NOT_VERIFIABLE}">${counts.NOT_VERIFIABLE||0}</b> not verifiable</span>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>Reference</th><th>Verdict</th><th>Source</th><th>DOI</th><th>Detail</th></tr></thead>
+      <tbody>${trs}</tbody>
+    </table>
+    <footer>"Not verifiable" does not mean fabricated — it means the reference was not found in Crossref or OpenAlex, which also happens for legitimate non-indexed literature. Verdicts are advisory, never definitive. Generated by the Reference Integrity Checker — reftruth.com.</footer>`;
+}
+function exportPDF(){
+  if(!lastResults.filter(Boolean).length) return;
+  buildPrintReport();
+  window.print();
+}
+
 $("run").addEventListener("click", run);
 $("sample").addEventListener("click", ()=>{ $("refs").value = EXAMPLE.join("\n"); });
 $("exportBtn").addEventListener("click", exportCSV);
+$("exportPdfBtn").addEventListener("click", exportPDF);
 </script>
 <script data-goatcounter="https://reftruth.goatcounter.com/count"
         async src="//gc.zgo.at/count.js"></script>
