@@ -117,6 +117,7 @@ Hirsch J.E. (2005): An index to quantify an individual's scientific research out
     <div class="row">
       <button id="run" class="btn-primary">Verify references</button>
       <button id="sample" class="btn-ghost">Load example</button>
+      <button id="clearBtn" class="btn-ghost" title="Clear references and results to start a new check">🗑 Clear</button>
       <button id="exportBtn" class="link" style="display:none">⬇ Export CSV</button>
       <button id="exportPdfBtn" class="link" style="display:none" title="Opens your browser's print dialog — choose &quot;Save as PDF&quot; as the destination">🖨 Export PDF report</button>
       <span id="status" style="color:var(--muted);font-size:.82rem"></span>
@@ -392,8 +393,25 @@ function exportPDF(){
   window.print();
 }
 
+function clearAll(){
+  $("refs").value = "";
+  $("docTitle").value = "";
+  lastResults = [];
+  $("results").innerHTML = "";
+  $("stats").classList.remove("on");
+  updateStats({});
+  $("disc").style.display = "none";
+  $("printReport").innerHTML = "";
+  $("exportBtn").style.display = "none";
+  $("exportPdfBtn").style.display = "none";
+  $("prog").classList.remove("on"); $("bar").style.width = "0%";
+  $("status").textContent = "";
+  $("refs").focus();
+}
+
 $("run").addEventListener("click", run);
 $("sample").addEventListener("click", ()=>{ $("refs").value = EXAMPLE.join("\n"); });
+$("clearBtn").addEventListener("click", clearAll);
 $("exportBtn").addEventListener("click", exportCSV);
 $("exportPdfBtn").addEventListener("click", exportPDF);
 </script>
