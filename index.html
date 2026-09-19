@@ -174,6 +174,14 @@ Hirsch J.E. (2005): An index to quantify an individual's scientific research out
 <script>
 "use strict";
 const MAILTO = "danielaristo@yahoo.com";
+// Free OpenAlex API key (openalex.org/settings/api): gives this app its own
+// $1/day budget instead of sharing the anonymous per-IP daily pool (which is
+// what surfaced as "retraction status could not be confirmed" once that
+// shared pool ran out). It's visible in this public client-side source
+// (there's no backend to hide it behind) — acceptable here since the key is
+// free, capped, and tied to no billing or account data, but it does mean
+// anyone could reuse it.
+const OPENALEX_API_KEY = "EFzVGljUdkP62TGAMLu0nN";
 const UMBRAL_TITULO = 0.60, UMBRAL_SIN_AUTOR = 0.95, MIN_TOKENS = 3, TOL_ANIO = 2, CONCURRENCY = 3;
 
 const EXAMPLE = [
@@ -243,16 +251,17 @@ async function getJSON(url, retries=2){
 }
 const crossrefByDOI = async doi => { const d = await getJSON("https://api.crossref.org/works/"+encodeURIComponent(doi)+"?mailto="+MAILTO); return d ? d.message : null; };
 const crossrefSearch = async ref => { const d = await getJSON("https://api.crossref.org/works?query.bibliographic="+encodeURIComponent(ref)+"&rows=3&select=title,issued,DOI,author&mailto="+MAILTO); return d ? (d.message.items||[]) : []; };
+const openAlexAuth = () => OPENALEX_API_KEY ? "&api_key="+encodeURIComponent(OPENALEX_API_KEY) : "";
 // openAlexSearchRaw distinguishes "queried but zero results" ([]) from "request failed" (null),
 // so callers can tell confirmed-negative apart from unknown/rate-limited.
-const openAlexSearchRaw = async txt => { await throttleOpenAlex(); const d = await getJSON("https://api.openalex.org/works?search="+encodeURIComponent(txt)+"&per-page=5&select=display_name,publication_year,doi,is_retracted,authorships&mailto="+MAILTO); return d ? (d.results||[]) : null; };
+const openAlexSearchRaw = async txt => { await throttleOpenAlex(); const d = await getJSON("https://api.openalex.org/works?search="+encodeURIComponent(txt)+"&per-page=5&select=display_name,publication_year,doi,is_retracted,authorships&mailto="+MAILTO+openAlexAuth()); return d ? (d.results||[]) : null; };
 const openAlexSearch = async txt => (await openAlexSearchRaw(txt)) || [];
 // Each retraction check returns true / false / null("unknown" — the API call failed or was
 // rate-limited). Silently treating "unknown" as "false" would itself be exactly the kind of
 // false-negative this tool exists to catch, so callers must surface null explicitly.
 async function openAlexRetractedByDOI(doi){
   await throttleOpenAlex();
-  const d = await getJSON("https://api.openalex.org/works/https://doi.org/"+doi+"?select=is_retracted&mailto="+MAILTO);
+  const d = await getJSON("https://api.openalex.org/works/https://doi.org/"+doi+"?select=is_retracted&mailto="+MAILTO+openAlexAuth());
   return d ? !!d.is_retracted : null;
 }
 async function openAlexRetractedByTitle(title, year){
