@@ -5,35 +5,42 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="author" content="Daniel Aristizábal Torres">
 <title>Reference Integrity Checker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#f7f7f5; --surface:#ffffff; --surface-2:#f1f0ec; --text:#1a1a18; --muted:#6b6b66;
-    --border:#e2e1db; --accent:#1f4e79; --accent-fg:#ffffff;
-    --ok-bg:#e7f4ec; --ok-fg:#1c6b3f; --warn-bg:#fdf3d8; --warn-fg:#8a6100;
-    --danger-bg:#fbe9e9; --danger-fg:#a02020; --neutral-bg:#eeedf0; --neutral-fg:#565660;
+    --bg:#ffffff; --surface:#ffffff; --surface-2:#FAFBFF; --text:#222222; --muted:#767676;
+    --border:#DFE0E2; --accent:#2456C9; --accent-fg:#ffffff;
+    --ok-bg:#EAF6F2; --ok-fg:#1A7460; --warn-bg:#FBF2E1; --warn-fg:#8A5F14;
+    --danger-bg:#FBEAE5; --danger-fg:#A8452F; --neutral-bg:#F1F1EF; --neutral-fg:#63635C;
   }
   @media (prefers-color-scheme: dark){
     :root{
-      --bg:#17171a; --surface:#212126; --surface-2:#2a2a30; --text:#ececef; --muted:#a0a0a8;
-      --border:#34343c; --accent:#5b9bd5; --accent-fg:#0a0a0c;
-      --ok-bg:#163323; --ok-fg:#7fd6a1; --warn-bg:#3a2f12; --warn-fg:#f0c65b;
-      --danger-bg:#3a1c1c; --danger-fg:#f09595; --neutral-bg:#2c2c33; --neutral-fg:#b4b4bc;
+      --bg:#131417; --surface:#1B1C20; --surface-2:#212328; --text:#E7E7E5; --muted:#9A9A96;
+      --border:#33353B; --accent:#6E9BF2; --accent-fg:#0D1220;
+      --ok-bg:#132621; --ok-fg:#8FDCC5; --warn-bg:#2A2011; --warn-fg:#EFC888;
+      --danger-bg:#2C1A14; --danger-fg:#F0A88F; --neutral-bg:#212328; --neutral-fg:#B7B7B2;
     }
   }
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  body{margin:0;font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     background:var(--bg);color:var(--text);line-height:1.55;font-size:15px}
-  .wrap{max-width:860px;margin:0 auto;padding:2rem 1.25rem 4rem}
-  header h1{font-size:1.5rem;margin:0 0 .35rem;display:flex;align-items:center;gap:.5rem}
-  header p{color:var(--muted);margin:0 0 1.4rem;max-width:62ch}
-  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.25rem}
+  .wrap{max-width:860px;margin:0 auto;padding:0 1.25rem 4rem}
+  .topbar{display:flex;justify-content:space-between;align-items:center;padding:1.15rem 0;
+    border-bottom:1px solid var(--border);margin-bottom:1.8rem}
+  header h1{font-weight:700;font-size:1.15rem;margin:0;display:flex;align-items:center;gap:.5rem;color:var(--accent)}
+  header p{color:var(--muted);margin:0 0 1.8rem;max-width:62ch;font-size:.92rem}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.25rem}
   label{font-weight:600;font-size:.9rem;display:block;margin-bottom:.5rem}
-  textarea{width:100%;min-height:170px;resize:vertical;border:1px solid var(--border);border-radius:10px;
+  textarea{width:100%;min-height:170px;resize:vertical;border:1px solid var(--border);border-radius:6px;
     padding:.75rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
     background:var(--surface-2);color:var(--text);line-height:1.5}
+  textarea:focus,input:focus{outline:2px solid color-mix(in srgb, var(--accent) 35%, transparent);outline-offset:1px}
   .row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.85rem}
-  button{font:inherit;font-weight:600;border-radius:9px;padding:.6rem 1.1rem;cursor:pointer;border:1px solid transparent}
+  button{font:inherit;font-weight:600;border-radius:6px;padding:.6rem 1.1rem;cursor:pointer;border:1px solid transparent}
   .btn-primary{background:var(--accent);color:var(--accent-fg)}
+  .btn-primary:hover{background:color-mix(in srgb, var(--accent) 85%, black)}
   .btn-primary:disabled{opacity:.5;cursor:not-allowed}
   .btn-ghost{background:transparent;color:var(--text);border-color:var(--border)}
   .btn-ghost:hover{background:var(--surface-2)}
@@ -44,29 +51,30 @@
   .bar{height:100%;width:0;background:var(--accent);transition:width .2s ease}
   .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.6rem;margin:1.3rem 0 .4rem;display:none}
   .stats.on{display:grid}
-  .stat{border-radius:10px;padding:.7rem .8rem}
+  .stat{border-radius:6px;padding:.7rem .8rem;border:1px solid var(--border)}
   .stat b{font-size:1.5rem;font-weight:700;display:block;line-height:1.1}
   .stat span{font-size:.74rem;font-weight:600}
-  .s-ok{background:var(--ok-bg);color:var(--ok-fg)} .s-warn{background:var(--warn-bg);color:var(--warn-fg)}
-  .s-danger{background:var(--danger-bg);color:var(--danger-fg)} .s-neutral{background:var(--neutral-bg);color:var(--neutral-fg)}
-  .results{margin-top:1rem;display:flex;flex-direction:column;gap:.55rem}
-  .item{display:flex;gap:.7rem;align-items:flex-start;background:var(--surface);border:1px solid var(--border);
-    border-radius:11px;padding:.7rem .85rem}
+  .s-ok{background:var(--ok-bg);color:var(--ok-fg);border-color:transparent} .s-warn{background:var(--warn-bg);color:var(--warn-fg);border-color:transparent}
+  .s-danger{background:var(--danger-bg);color:var(--danger-fg);border-color:transparent} .s-neutral{background:var(--neutral-bg);color:var(--neutral-fg);border-color:transparent}
+  .results{margin-top:1rem;display:flex;flex-direction:column}
+  .item{display:flex;gap:.7rem;align-items:flex-start;background:var(--surface);border:none;border-top:1px solid var(--border);
+    padding:.8rem 0}
+  .results .item:last-child{border-bottom:1px solid var(--border)}
   .dot{flex:0 0 auto;width:20px;height:20px;border-radius:50%;margin-top:.15rem;display:flex;align-items:center;
     justify-content:center;font-size:12px;font-weight:800;color:#fff}
-  .d-ok{background:#2e9e63} .d-warn{background:#c79212} .d-danger{background:#c0392b} .d-neutral{background:#8a8a94} .d-run{background:var(--muted)}
+  .d-ok{background:#1F8A70} .d-warn{background:#B0791E} .d-danger{background:#C1503A} .d-neutral{background:#8a8a94} .d-run{background:var(--muted)}
   .item .body{min-width:0;flex:1}
   .item .ref{font-size:.85rem;margin:0}
   .item .meta{font-size:.78rem;color:var(--muted);margin:.2rem 0 0;word-break:break-word}
   .item a{color:var(--accent)}
-  .pill{flex:0 0 auto;font-size:.68rem;font-weight:700;padding:.2rem .55rem;border-radius:99px;white-space:nowrap;height:fit-content}
+  .pill{flex:0 0 auto;font-size:.68rem;font-weight:700;padding:.2rem .55rem;border-radius:4px;white-space:nowrap;height:fit-content}
   .p-ok{background:var(--ok-bg);color:var(--ok-fg)} .p-warn{background:var(--warn-bg);color:var(--warn-fg)}
   .p-danger{background:var(--danger-bg);color:var(--danger-fg)} .p-neutral{background:var(--neutral-bg);color:var(--neutral-fg)}
   footer{margin-top:2.5rem;color:var(--muted);font-size:.78rem;border-top:1px solid var(--border);padding-top:1.1rem}
   footer a{color:var(--accent)}
-  input[type=text]{width:100%;border:1px solid var(--border);border-radius:10px;padding:.55rem .7rem;
+  input[type=text]{width:100%;border:1px solid var(--border);border-radius:6px;padding:.55rem .7rem;
     background:var(--surface-2);color:var(--text);font:inherit;font-size:.88rem;margin-bottom:.9rem}
-  .disc{background:var(--warn-bg);color:var(--warn-fg);border-radius:10px;padding:.6rem .8rem;font-size:.8rem;margin-top:1rem}
+  .disc{background:var(--warn-bg);color:var(--warn-fg);border-radius:6px;padding:.6rem .8rem;font-size:.8rem;margin-top:1rem}
   @media(max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
   .print-report{display:none}
   @media print{
@@ -101,12 +109,22 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>🔎 Reference Integrity Checker</h1>
-    <p>Paste a bibliography — one reference per line — and check each entry against open scholarly
-       databases: does it exist, do the metadata match, and has it been retracted. Everything runs in
-       your browser; no reference ever leaves your device except as a query to public APIs.</p>
-  </header>
+  <div class="topbar">
+    <header>
+      <h1>
+        <svg width="20" height="20" viewBox="0 0 18 18" aria-hidden="true">
+          <rect x="0" y="0" width="8" height="8" rx="2" fill="#2456C9"></rect>
+          <rect x="10" y="0" width="8" height="8" rx="2" fill="#2456C9" opacity="0.5"></rect>
+          <rect x="0" y="10" width="8" height="8" rx="2" fill="#2456C9" opacity="0.5"></rect>
+          <rect x="10" y="10" width="8" height="8" rx="2" fill="#2456C9" opacity="0.25"></rect>
+        </svg>
+        Reference Integrity Checker
+      </h1>
+    </header>
+  </div>
+  <p style="color:var(--muted);margin:0 0 1.8rem;max-width:62ch;font-size:.92rem">Paste a bibliography — one reference per line — and check each entry against open scholarly
+     databases: does it exist, do the metadata match, and has it been retracted. Everything runs in
+     your browser; no reference ever leaves your device except as a query to public APIs.</p>
 
   <div class="card">
     <label for="docTitle">Document title (optional) — used as the report heading and PDF file name</label>
