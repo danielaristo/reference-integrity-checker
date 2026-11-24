@@ -30,6 +30,8 @@ Veredictos:
   RETRACTADA        existe pero fue retractada
   NO VERIFICABLE    no aparece en Crossref ni OpenAlex
                     (posible alucinación… o literatura gris sin indexar)
+  NO COMPROBADA     una fuente no respondió (límite de tasa, conexión): NO es un
+                    veredicto sobre la referencia; --continuar la reintenta
 
 Uso:
     python3 verificador.py referencias.txt
@@ -67,28 +69,43 @@ UMBRAL_DUPLICADO = 0.90   # similitud para considerar dos registros el mismo tra
 MIN_TOKENS = 3            # tokens significativos mínimos para confiar solo en el título
 TOLERANCIA_ANIO = 2       # ±2 años (desfase online-first vs. impreso)
 UMBRAL_TITULO_DOI = 0.50  # con DOI: fracción mínima de palabras del título REGISTRADO presentes en la cita
+ESTADO_ERROR = "NO COMPROBADA"   # una fuente no respondió: NO es un veredicto sobre la referencia
+DETALLE_ERROR = ("Una fuente (Crossref u OpenAlex) no respondió (límite de tasa o problema de "
+                 "conexión). No es un veredicto sobre la referencia: reintente más tarde")
 
 
 # ----------------------------------------------------------------------
 # Utilidades HTTP y de texto
 # ----------------------------------------------------------------------
 
-def fetch_json(url, timeout=30, reintentos=2):
-    """GET con User-Agent identificado; devuelve dict o None si falla."""
+def fetch_json_estado(url, timeout=30, reintentos=2):
+    """
+    GET con User-Agent identificado. Respuesta de tres vías, para no confundir
+    "la fuente dice que no existe" con "la fuente no respondió":
+      ("ok", datos)          la fuente respondió
+      ("noencontrado", None) HTTP 404: registro inexistente (hallazgo definitivo)
+      ("error", None)        límite de tasa, error del servidor o falla de conexión
+    """
     for intento in range(reintentos + 1):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
+                return ("ok", json.loads(r.read().decode("utf-8")))
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                return None
+                return ("noencontrado", None)
             if intento < reintentos:
                 time.sleep(3 * (intento + 1))
         except Exception:
             if intento < reintentos:
                 time.sleep(3 * (intento + 1))
-    return None
+    return ("error", None)
+
+
+def fetch_json(url, timeout=30, reintentos=2):
+    """Forma antigua: devuelve los datos, o None ante cualquier cosa que no sea una respuesta limpia."""
+    estado, datos = fetch_json_estado(url, timeout, reintentos)
+    return datos if estado == "ok" else None
 
 
 def normalizar(texto):
@@ -155,28 +172,34 @@ def extraer_anio(referencia):
 # ----------------------------------------------------------------------
 
 def crossref_por_doi(doi):
+    """('ok', registro) | ('noencontrado', None) | ('error', None)."""
     url = "https://api.crossref.org/works/" + urllib.parse.quote(doi)
-    datos = fetch_json(url)
-    return datos.get("message") if datos else None
+    estado, datos = fetch_json_estado(url)
+    return (estado, datos.get("message")) if estado == "ok" else (estado, None)
 
 
 def crossref_busqueda(referencia, filas=3):
+    """Lista de candidatos (vacía = confirmado que no hay nada), o None si la consulta falló."""
     url = ("https://api.crossref.org/works?query.bibliographic=%s&rows=%d"
            "&select=title,issued,DOI,author&mailto=%s"
            % (urllib.parse.quote(referencia), filas, MAILTO))
-    datos = fetch_json(url)
-    if not datos:
+    estado, datos = fetch_json_estado(url)
+    if estado == "error":
+        return None
+    if estado != "ok":
         return []
     return datos.get("message", {}).get("items", [])
 
 
 def openalex_busqueda(texto, filas=5):
-    """Búsqueda general en OpenAlex; devuelve lista de dicts crudos."""
+    """Búsqueda general en OpenAlex: lista de dicts crudos (vacía = nada), o None si la consulta falló."""
     url = ("https://api.openalex.org/works?search=%s&per-page=%d"
            "&select=display_name,publication_year,doi,is_retracted,authorships&mailto=%s"
            % (urllib.parse.quote(texto), filas, MAILTO))
-    datos = fetch_json(url)
-    if not datos:
+    estado, datos = fetch_json_estado(url)
+    if estado == "error":
+        return None
+    if estado != "ok":
         return []
     return datos.get("results", [])
 
@@ -207,7 +230,10 @@ def openalex_retractado_por_titulo(titulo, anio):
     registro emparejado no tiene el flag pero su duplicado canónico sí.
     """
     consulta = re.sub(r"[,:|&]", " ", titulo)
-    for cand in openalex_busqueda(consulta, filas=5):
+    candidatos = openalex_busqueda(consulta, filas=5)
+    if candidatos is None:
+        return None          # la consulta falló: estado de retracción desconocido
+    for cand in candidatos:
         titulo_cand = cand.get("display_name") or ""
         anio_cand = cand.get("publication_year")
         if score_titulo(titulo, titulo_cand) >= UMBRAL_DUPLICADO:
@@ -251,7 +277,11 @@ def verificar_referencia(referencia):
 
     # --- Caso 1: la referencia trae DOI -> verificación directa en Crossref
     if doi_en_ref:
-        item = crossref_por_doi(doi_en_ref)
+        estado_doi, item = crossref_por_doi(doi_en_ref)
+        if estado_doi == "error":
+            resultado["estado"] = ESTADO_ERROR
+            resultado["detalle"] = DETALLE_ERROR
+            return resultado
         if item is None:
             resultado["estado"] = "NO VERIFICABLE"
             resultado["detalle"] = "El DOI citado no existe en Crossref (posible alucinación)"
@@ -278,7 +308,11 @@ def verificar_referencia(referencia):
     else:
         # --- Caso 2: sin DOI -> búsqueda en Crossref
         mejor, mejor_score, mejor_score_bruto = None, 0.0, 0.0
-        for item in crossref_busqueda(referencia):
+        fallo = False          # alguna fuente no respondió
+        candidatos = crossref_busqueda(referencia)
+        if candidatos is None:
+            fallo, candidatos = True, []
+        for item in candidatos:
             titulo, anio, doi, apellido = campos_item(item)
             acepta, s = emparejamiento_aceptable(referencia, titulo, apellido)
             mejor_score_bruto = max(mejor_score_bruto, s)
@@ -287,7 +321,10 @@ def verificar_referencia(referencia):
 
         # --- Caso 3: Crossref no la encontró -> respaldo en OpenAlex
         if mejor is None:
-            for cand in openalex_busqueda(referencia):
+            candidatos_oa = openalex_busqueda(referencia)
+            if candidatos_oa is None:
+                fallo, candidatos_oa = True, []
+            for cand in candidatos_oa:
                 titulo = cand.get("display_name") or ""
                 anio = cand.get("publication_year")
                 doi = (cand.get("doi") or "").replace("https://doi.org/", "")
@@ -297,6 +334,12 @@ def verificar_referencia(referencia):
                 if acepta and s > mejor_score:
                     mejor, mejor_score = (titulo, anio, doi, apellido, "OpenAlex",
                                           bool(cand.get("is_retracted"))), s
+
+        if mejor is None and fallo:
+            # "No encontrada" solo es un hallazgo si todas las fuentes consultadas respondieron.
+            resultado["estado"] = ESTADO_ERROR
+            resultado["detalle"] = DETALLE_ERROR
+            return resultado
 
         if mejor is None:
             resultado["estado"] = "NO VERIFICABLE"
@@ -327,18 +370,32 @@ def verificar_referencia(referencia):
 
     # --- Estado de retracción: por DOI y, si sale limpio, por título
     #     (los registros DOI duplicados pueden tener el flag solo en el canónico)
-    retractada = False
+    retractada, incierto = False, False
     if resultado["doi"]:
-        retractada = openalex_retractado_por_doi(resultado["doi"]) is True
+        r = openalex_retractado_por_doi(resultado["doi"])
+        if r is None:
+            incierto = True
+        else:
+            retractada = r
     if not retractada and resultado["titulo_encontrado"]:
-        retractada = openalex_retractado_por_titulo(resultado["titulo_encontrado"],
-                                                    resultado["anio_encontrado"])
+        r = openalex_retractado_por_titulo(resultado["titulo_encontrado"],
+                                           resultado["anio_encontrado"])
+        if r is None:
+            incierto = True
+        elif r:
+            retractada = True
     if retractada:
         resultado["retractada"] = "SI"
         resultado["estado"] = "RETRACTADA"
         resultado["detalle"] = ("OpenAlex marca este trabajo como retractado "
                                 "(detectado vía cotejo de duplicados)" if resultado["doi"] else
                                 "OpenAlex marca este trabajo como retractado")
+    elif incierto:
+        # Nunca dar por "limpia" una comprobación que falló.
+        resultado["retractada"] = "NO COMPROBADA"
+        resultado["detalle"] = ((resultado["detalle"] + ". " if resultado["detalle"] else "") +
+                                "No se pudo confirmar el estado de retracción (la fuente no respondió): "
+                                "verifíquese a mano antes de confiar en esta referencia")
     else:
         resultado["retractada"] = "NO"
 
@@ -354,6 +411,7 @@ ICONOS = {
     "NO VERIFICABLE": "❌",
     "METADATOS DUDOSOS": "⚠️ ",
     "RETRACTADA": "🚫",
+    "NO COMPROBADA": "🔁",
 }
 
 CAMPOS_CSV = ["referencia", "estado", "fuente", "doi", "titulo_encontrado",
@@ -383,17 +441,24 @@ def main():
         referencias = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
 
     # Modo continuar: saltar referencias ya presentes en el reporte
-    ya_hechas = set()
+    # Las filas "NO COMPROBADA" (una fuente no respondió) no cuentan como hechas: se reintentan.
+    ya_hechas, filas_previas, a_reintentar = set(), [], 0
     if continuar and os.path.exists(salida):
         with open(salida, encoding="utf-8-sig") as f:
             for fila in csv.DictReader(f):
-                ya_hechas.add(fila["referencia"])
-        print("Retomando: %d referencias ya procesadas en %s" % (len(ya_hechas), salida))
+                if fila["estado"] == ESTADO_ERROR:
+                    a_reintentar += 1
+                else:
+                    filas_previas.append(fila)
+                    ya_hechas.add(fila["referencia"])
+        print("Retomando: %d referencias ya procesadas en %s%s" % (
+            len(ya_hechas), salida,
+            (" (+ %d no comprobadas, se reintentan)" % a_reintentar) if a_reintentar else ""))
 
     pendientes = [r for r in referencias if r not in ya_hechas]
     print("Verificando %d referencias (%d en total)...\n" % (len(pendientes), len(referencias)))
 
-    modo = "a" if (continuar and ya_hechas) else "w"
+    modo = "w"   # se reescribe el reporte conservando las filas ya buenas, sin duplicar las reintentadas
     conteo = {}
     candado = threading.Lock()
 
@@ -404,9 +469,11 @@ def main():
         return r
 
     with open(salida, modo, newline="", encoding="utf-8-sig") as fsal:
-        w = csv.DictWriter(fsal, fieldnames=CAMPOS_CSV)
-        if modo == "w":
-            w.writeheader()
+        w = csv.DictWriter(fsal, fieldnames=CAMPOS_CSV, extrasaction="ignore")
+        w.writeheader()
+        for fila in filas_previas:
+            w.writerow(fila)
+        fsal.flush()
         inicio = time.time()
         i = 0
 
@@ -449,10 +516,14 @@ def main():
 
     print("=" * 60)
     print("RESUMEN (de esta corrida)")
-    for estado in ["VERIFICADA", "METADATOS DUDOSOS", "NO VERIFICABLE", "RETRACTADA"]:
+    for estado in ["VERIFICADA", "METADATOS DUDOSOS", "NO VERIFICABLE", "RETRACTADA", ESTADO_ERROR]:
         if conteo.get(estado):
             print("  %s %-20s %d" % (ICONOS[estado], estado, conteo[estado]))
     print("=" * 60)
+    if conteo.get(ESTADO_ERROR):
+        print("\n%d referencias NO se pudieron comprobar (una fuente no respondió); no son un veredicto."
+              % conteo[ESTADO_ERROR])
+        print("Ejecute de nuevo con --continuar para reintentar solo esas.")
     print("\nReporte guardado en: %s" % salida)
 
 
