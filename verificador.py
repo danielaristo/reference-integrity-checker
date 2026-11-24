@@ -19,6 +19,10 @@ Reglas de emparejamiento (v0.3):
     solo se aceptan con coincidencia total Y apellido del autor presente.
   - Si el apellido del primer autor NO aparece en la referencia, se exige
     coincidencia de título casi perfecta (>=0.95).
+  - Si la referencia trae DOI y el DOI NO existe, se busca la obra por título y
+    autor (la cita sin el DOI): si aparece, METADATOS DUDOSOS con la explicación
+    (errata de escritura si difiere en <=3 caracteres, o DOI erróneo/inventado);
+    si no aparece, NO VERIFICABLE.
   - Si la referencia trae DOI y el DOI existe, también se comprueba que el
     título registrado aparezca en la cita (>=0.50 de sus palabras
     significativas; si tiene menos de 3, deben estar todas); si no,
@@ -257,6 +261,80 @@ def campos_item(item):
     return titulo, anio, item.get("DOI"), apellido
 
 
+def buscar_mejor(referencia):
+    """
+    Busca la obra citada por título y autor: Crossref primero y, si no hay un
+    emparejamiento aceptable, OpenAlex como respaldo.
+    Devuelve (mejor, mejor_score, mejor_score_bruto, fallo), donde `mejor` es
+    (titulo, anio, doi, apellido, fuente, retractada_directa) o None, y `fallo`
+    indica que alguna fuente consultada no respondió (entonces "no hay
+    coincidencia" no es un hallazgo).
+    """
+    mejor, mejor_score, mejor_score_bruto = None, 0.0, 0.0
+    fallo = False
+    candidatos = crossref_busqueda(referencia)
+    if candidatos is None:
+        fallo, candidatos = True, []
+    for item in candidatos:
+        titulo, anio, doi, apellido = campos_item(item)
+        acepta, s = emparejamiento_aceptable(referencia, titulo, apellido)
+        mejor_score_bruto = max(mejor_score_bruto, s)
+        if acepta and s > mejor_score:
+            mejor, mejor_score = (titulo, anio, doi, apellido, "Crossref", None), s
+
+    if mejor is None:
+        candidatos_oa = openalex_busqueda(referencia)
+        if candidatos_oa is None:
+            fallo, candidatos_oa = True, []
+        for cand in candidatos_oa:
+            titulo = cand.get("display_name") or ""
+            anio = cand.get("publication_year")
+            doi = (cand.get("doi") or "").replace("https://doi.org/", "")
+            apellido = openalex_apellido(cand)
+            acepta, s = emparejamiento_aceptable(referencia, titulo, apellido)
+            mejor_score_bruto = max(mejor_score_bruto, s)
+            if acepta and s > mejor_score:
+                mejor, mejor_score = (titulo, anio, doi, apellido, "OpenAlex",
+                                      bool(cand.get("is_retracted"))), s
+    return mejor, mejor_score, mejor_score_bruto, fallo
+
+
+def distancia_edicion(a, b):
+    """Distancia de Levenshtein entre dos cadenas (sin distinguir mayúsculas)."""
+    a, b = a.lower(), b.lower()
+    previa = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        actual = [i]
+        for j, cb in enumerate(b, 1):
+            actual.append(min(previa[j] + 1, actual[j - 1] + 1, previa[j - 1] + (ca != cb)))
+        previa = actual
+    return previa[-1]
+
+
+UMBRAL_DOI_TIPOGRAFICO = 3   # hasta tantos caracteres de diferencia: probable error de escritura
+
+
+def quitar_doi(referencia, doi):
+    """La cita sin su DOI (ni el prefijo doi.org / 'doi:'), para buscar la obra solo por título y autor."""
+    texto = referencia.replace(doi, " ")
+    texto = re.sub(r"(?i)\b(?:https?://)?(?:dx\.)?doi\.org/?", " ", texto)
+    texto = re.sub(r"(?i)\bdoi\s*:?\s*", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def nota_doi_inexistente(doi_citado, doi_real, titulo, apellido, anio):
+    """Explica que el DOI citado no existe pero la obra sí, y si parece una errata o un DOI inventado."""
+    base = ("El DOI citado (%s) no existe, pero la obra sí: «%s» (%s, %s). "
+            % (doi_citado, titulo, apellido or "s. a.", anio or "s. f."))
+    if not doi_real:
+        return base + "Esa obra no tiene DOI en los registros consultados: verifíquese el DOI a mano"
+    d = distancia_edicion(doi_citado, doi_real)
+    if d <= UMBRAL_DOI_TIPOGRAFICO:
+        return base + ("Su DOI es %s: el citado difiere en %d carácter(es), probable error de escritura"
+                       % (doi_real, d))
+    return base + ("Su DOI es %s: el citado no se parece a ese, así que es erróneo o inventado" % doi_real)
+
+
 def verificar_referencia(referencia):
     """Devuelve un dict con el veredicto de una referencia."""
     resultado = {
@@ -274,6 +352,7 @@ def verificar_referencia(referencia):
     }
 
     doi_en_ref = extraer_doi(referencia)
+    nota_doi = ""      # se llena si el DOI citado no existe pero la obra sí
 
     # --- Caso 1: la referencia trae DOI -> verificación directa en Crossref
     if doi_en_ref:
@@ -283,57 +362,53 @@ def verificar_referencia(referencia):
             resultado["detalle"] = DETALLE_ERROR
             return resultado
         if item is None:
-            resultado["estado"] = "NO VERIFICABLE"
-            resultado["detalle"] = "El DOI citado no existe en Crossref (posible alucinación)"
-            return resultado
-        titulo, anio, doi, apellido = campos_item(item)
-        resultado.update(fuente="Crossref", doi=doi, titulo_encontrado=titulo,
-                         autor_encontrado=apellido or "", anio_encontrado=anio)
-        resultado["score_titulo"] = round(score_titulo(referencia, titulo), 2)
-        # El DOI existe, pero ¿es la obra que dice la cita? Un DOI real pegado a un
-        # título inventado es una alucinación frecuente: se compara el título
-        # registrado con el citado. Si el título registrado es muy corto (<3 palabras
-        # significativas) se exige que estén todas, como en la búsqueda sin DOI.
-        n_tok = len(tokens_significativos(titulo))
-        minimo = UMBRAL_TITULO_DOI if n_tok >= MIN_TOKENS else 0.99
-        if n_tok >= 1 and resultado["score_titulo"] < minimo:
-            resultado["estado"] = "METADATOS DUDOSOS"
-            resultado["detalle"] = (
-                "El DOI existe pero está registrado a otra obra: «%s» (%s, %s). "
-                "Solo %d %% de las palabras clave de ese título aparecen en la cita: "
-                "posible título inventado con un DOI real, o título traducido/abreviado; "
-                "verifíquese a mano" % (titulo, apellido or "s. a.", anio or "s. f.",
-                                        round(resultado["score_titulo"] * 100)))
-            return resultado
-    else:
-        # --- Caso 2: sin DOI -> búsqueda en Crossref
-        mejor, mejor_score, mejor_score_bruto = None, 0.0, 0.0
-        fallo = False          # alguna fuente no respondió
-        candidatos = crossref_busqueda(referencia)
-        if candidatos is None:
-            fallo, candidatos = True, []
-        for item in candidatos:
+            # El DOI citado no existe. Antes de concluir nada, se busca la obra por título
+            # y autor (la cita sin el DOI): si aparece, el problema es el DOI (errata o
+            # inventado), no la obra.
+            mejor, mejor_score, mejor_score_bruto, fallo = buscar_mejor(quitar_doi(referencia, doi_en_ref))
+            if mejor is None and fallo:
+                resultado["estado"] = ESTADO_ERROR
+                resultado["detalle"] = DETALLE_ERROR
+                return resultado
+            if mejor is None:
+                resultado["estado"] = "NO VERIFICABLE"
+                resultado["score_titulo"] = round(mejor_score_bruto, 2)
+                resultado["detalle"] = ("Ni el DOI citado ni el título aparecen en Crossref ni OpenAlex: "
+                                        "posible referencia fabricada, o literatura gris sin indexar")
+                return resultado
+            titulo, anio, doi, apellido, fuente, retractada_directa = mejor
+            resultado.update(fuente=fuente, doi=doi or "", titulo_encontrado=titulo,
+                             autor_encontrado=apellido or "", anio_encontrado=anio)
+            resultado["score_titulo"] = round(mejor_score, 2)
+            nota_doi = nota_doi_inexistente(doi_en_ref, doi, titulo, apellido, anio)
+            if retractada_directa:
+                resultado["retractada"] = "SI"
+                resultado["estado"] = "RETRACTADA"
+                resultado["detalle"] = nota_doi + ". OpenAlex marca este trabajo como retractado"
+                return resultado
+        else:
             titulo, anio, doi, apellido = campos_item(item)
-            acepta, s = emparejamiento_aceptable(referencia, titulo, apellido)
-            mejor_score_bruto = max(mejor_score_bruto, s)
-            if acepta and s > mejor_score:
-                mejor, mejor_score = (titulo, anio, doi, apellido, "Crossref", None), s
-
-        # --- Caso 3: Crossref no la encontró -> respaldo en OpenAlex
-        if mejor is None:
-            candidatos_oa = openalex_busqueda(referencia)
-            if candidatos_oa is None:
-                fallo, candidatos_oa = True, []
-            for cand in candidatos_oa:
-                titulo = cand.get("display_name") or ""
-                anio = cand.get("publication_year")
-                doi = (cand.get("doi") or "").replace("https://doi.org/", "")
-                apellido = openalex_apellido(cand)
-                acepta, s = emparejamiento_aceptable(referencia, titulo, apellido)
-                mejor_score_bruto = max(mejor_score_bruto, s)
-                if acepta and s > mejor_score:
-                    mejor, mejor_score = (titulo, anio, doi, apellido, "OpenAlex",
-                                          bool(cand.get("is_retracted"))), s
+            resultado.update(fuente="Crossref", doi=doi, titulo_encontrado=titulo,
+                             autor_encontrado=apellido or "", anio_encontrado=anio)
+            resultado["score_titulo"] = round(score_titulo(referencia, titulo), 2)
+            # El DOI existe, pero ¿es la obra que dice la cita? Un DOI real pegado a un
+            # título inventado es una alucinación frecuente: se compara el título
+            # registrado con el citado. Si el título registrado es muy corto (<3 palabras
+            # significativas) se exige que estén todas, como en la búsqueda sin DOI.
+            n_tok = len(tokens_significativos(titulo))
+            minimo = UMBRAL_TITULO_DOI if n_tok >= MIN_TOKENS else 0.99
+            if n_tok >= 1 and resultado["score_titulo"] < minimo:
+                resultado["estado"] = "METADATOS DUDOSOS"
+                resultado["detalle"] = (
+                    "El DOI existe pero está registrado a otra obra: «%s» (%s, %s). "
+                    "Solo %d %% de las palabras clave de ese título aparecen en la cita: "
+                    "posible título inventado con un DOI real, o título traducido/abreviado; "
+                    "verifíquese a mano" % (titulo, apellido or "s. a.", anio or "s. f.",
+                                            round(resultado["score_titulo"] * 100)))
+                return resultado
+    else:
+        # --- Caso 2: sin DOI -> búsqueda por título y autor (Crossref, luego OpenAlex)
+        mejor, mejor_score, mejor_score_bruto, fallo = buscar_mejor(referencia)
 
         if mejor is None and fallo:
             # "No encontrada" solo es un hallazgo si todas las fuentes consultadas respondieron.
@@ -398,6 +473,13 @@ def verificar_referencia(referencia):
                                 "verifíquese a mano antes de confiar en esta referencia")
     else:
         resultado["retractada"] = "NO"
+
+    # --- El DOI citado no existía, pero la obra sí: queda como METADATOS DUDOSOS
+    #     (salvo que esté retractada, que es más grave) y con la explicación delante.
+    if nota_doi:
+        if resultado["estado"] == "VERIFICADA":
+            resultado["estado"] = "METADATOS DUDOSOS"
+        resultado["detalle"] = nota_doi + (". " + resultado["detalle"] if resultado["detalle"] else "")
 
     return resultado
 

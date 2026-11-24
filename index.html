@@ -307,51 +307,96 @@ const oaSurname = c => { const a = c.authorships&&c.authorships[0]; if(!a||!a.au
 
 // ---------- cascade ----------
 const ERR_DETAIL = "A source (Crossref or OpenAlex) did not answer — rate limit or connection problem. This is NOT a verdict on the reference: wait a moment and check it again.";
+
+// Looks the cited work up by title and author: Crossref first, OpenAlex as a fallback.
+// Returns {best, bestScore, failed}; failed = at least one source did not answer, in which case
+// "no match" is not a finding.
+async function findBest(text){
+  let best=null, bestScore=0, failed=false;
+  const cfItems = await crossrefSearch(text);
+  if(cfItems===null) failed=true;
+  else for(const it of cfItems){
+    const c = cfCross(it); const {ok,s} = matchAcceptable(text, c.title, c.surname);
+    if(ok && s>bestScore){ best={...c, source:"Crossref"}; bestScore=s; }
+  }
+  if(!best){
+    const oaItems = await openAlexSearchRaw(text);
+    if(oaItems===null) failed=true;
+    else for(const c of oaItems){
+      const cand = {title:c.display_name||"", year:c.publication_year, doi:(c.doi||"").replace("https://doi.org/",""), surname:oaSurname(c), retracted:!!c.is_retracted};
+      const {ok,s} = matchAcceptable(text, cand.title, cand.surname);
+      if(ok && s>bestScore){ best={...cand, source:"OpenAlex"}; bestScore=s; }
+    }
+  }
+  return {best, bestScore, failed};
+}
+// The citation without its DOI (nor "doi.org/" / "doi:"), to look the work up by title and author only.
+const stripDOI = (ref, doi) => ref.split(doi).join(" ").replace(/\b(?:https?:\/\/)?(?:dx\.)?doi\.org\/?/gi," ").replace(/\bdoi\s*:?\s*/gi," ").replace(/\s+/g," ").trim();
+function editDistance(a, b){
+  a=a.toLowerCase(); b=b.toLowerCase();
+  let prev = Array.from({length:b.length+1}, (_,j)=>j);
+  for(let i=1;i<=a.length;i++){
+    const cur=[i];
+    for(let j=1;j<=b.length;j++) cur.push(Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]!==b[j-1]?1:0)));
+    prev=cur;
+  }
+  return prev[b.length];
+}
+const DOI_TYPO_MAX = 3;   // up to this many characters of difference: probable typing error
+// Explains that the cited DOI does not exist although the work does, and whether it looks like a typo or an invented DOI.
+function doiMissingNote(citedDOI, realDOI, title, surname, year){
+  const base = `The cited DOI (${citedDOI}) does not exist, but the work does: “${title}” (${surname||"n.a."}, ${year||"n.d."}). `;
+  if(!realDOI) return base + "That work has no DOI in the records consulted — check the DOI by hand.";
+  const d = editDistance(citedDOI, realDOI);
+  return d <= DOI_TYPO_MAX
+    ? base + `Its DOI is ${realDOI}: the cited one differs by ${d} character${d===1?"":"s"} — probably a typing error.`
+    : base + `Its DOI is ${realDOI}: the cited one looks nothing like it, so it is wrong or invented.`;
+}
+
 async function verify(ref){
   const res = {ref, verdict:"", source:"", doi:"", titleFound:"", yearRef:extractYear(ref), yearFound:"", score:"", detail:""};
   const doiIn = extractDOI(ref);
-  let title, year, doi, surname;
+  let title, year, doi, surname, doiNote = "";
 
   if(doiIn){
     const cr = await crossrefByDOI(doiIn);
     if(cr.state==="error"){ res.verdict="ERROR"; res.detail=ERR_DETAIL; return res; }
-    if(cr.state==="notfound"){ res.verdict="NOT_VERIFIABLE"; res.detail="The cited DOI does not resolve in Crossref (possible fabrication)."; return res; }
-    ({title,year,doi,surname} = cfCross(cr.item)); res.source="Crossref";
-    res.doi=doi; res.titleFound=title; res.yearFound=year; res.score=titleScore(ref,title).toFixed(2);
-    // The DOI exists — but is it the work the citation says it is? A real DOI attached to an
-    // invented title is a common hallucination pattern. Compare the registered title with the
-    // cited one. A very short registered title (<3 key words) must appear in full, as in the no-DOI search.
-    const nTok = sigTokens(title).length, minScore = nTok >= MIN_TOKENS ? UMBRAL_TITULO_DOI : 0.99;
-    if(nTok >= 1 && parseFloat(res.score) < minScore){
-      res.verdict="METADATA";
-      res.detail=`The DOI exists but is registered to a different work: “${title}” (${surname||"n.a."}, ${year||"n.d."}). Only ${Math.round(parseFloat(res.score)*100)}% of that title's key words appear in the citation — possible invented title with a real DOI, or a translated/abridged title; check by hand.`;
-      return res;
-    }
-  } else {
-    let best=null, bestScore=0, failed=false;   // failed = at least one source did not answer
-    const cfItems = await crossrefSearch(ref);
-    if(cfItems===null) failed=true;
-    else for(const it of cfItems){
-      const c = cfCross(it); const {ok,s} = matchAcceptable(ref, c.title, c.surname);
-      if(ok && s>bestScore){ best={...c, source:"Crossref"}; bestScore=s; }
-    }
-    if(!best){
-      const oaItems = await openAlexSearchRaw(ref);
-      if(oaItems===null) failed=true;
-      else for(const c of oaItems){
-        const cand = {title:c.display_name||"", year:c.publication_year, doi:(c.doi||"").replace("https://doi.org/",""), surname:oaSurname(c), retracted:!!c.is_retracted};
-        const {ok,s} = matchAcceptable(ref, cand.title, cand.surname);
-        if(ok && s>bestScore){ best={...cand, source:"OpenAlex"}; bestScore=s; }
+    if(cr.state==="notfound"){
+      // The cited DOI does not exist. Before concluding anything, look the work up by title and
+      // author (the citation without the DOI): if it turns up, the problem is the DOI (a typo or
+      // an invented one), not the work.
+      const f = await findBest(stripDOI(ref, doiIn));
+      if(!f.best){
+        if(f.failed){ res.verdict="ERROR"; res.detail=ERR_DETAIL; return res; }
+        res.verdict="NOT_VERIFIABLE"; res.detail="Neither the cited DOI nor the title could be found in Crossref or OpenAlex — possible fabrication, or legitimate non-indexed / gray literature."; return res;
+      }
+      ({title,year,doi,surname} = f.best); res.source=f.best.source;
+      res.doi=doi||""; res.titleFound=title; res.yearFound=year; res.score=f.bestScore.toFixed(2);
+      doiNote = doiMissingNote(doiIn, doi, title, surname, year);
+      if(f.best.retracted){ res.verdict="RETRACTED"; res.detail=doiNote+" OpenAlex marks this work as retracted."; return res; }
+    } else {
+      ({title,year,doi,surname} = cfCross(cr.item)); res.source="Crossref";
+      res.doi=doi; res.titleFound=title; res.yearFound=year; res.score=titleScore(ref,title).toFixed(2);
+      // The DOI exists — but is it the work the citation says it is? A real DOI attached to an
+      // invented title is a common hallucination pattern. Compare the registered title with the
+      // cited one. A very short registered title (<3 key words) must appear in full, as in the no-DOI search.
+      const nTok = sigTokens(title).length, minScore = nTok >= MIN_TOKENS ? UMBRAL_TITULO_DOI : 0.99;
+      if(nTok >= 1 && parseFloat(res.score) < minScore){
+        res.verdict="METADATA";
+        res.detail=`The DOI exists but is registered to a different work: “${title}” (${surname||"n.a."}, ${year||"n.d."}). Only ${Math.round(parseFloat(res.score)*100)}% of that title's key words appear in the citation — possible invented title with a real DOI, or a translated/abridged title; check by hand.`;
+        return res;
       }
     }
-    if(!best){
+  } else {
+    const f = await findBest(ref);
+    if(!f.best){
       // "Not found" is only a finding if every source we asked actually answered.
-      if(failed){ res.verdict="ERROR"; res.detail=ERR_DETAIL; return res; }
+      if(f.failed){ res.verdict="ERROR"; res.detail=ERR_DETAIL; return res; }
       res.verdict="NOT_VERIFIABLE"; res.detail="Not found in Crossref or OpenAlex — possible fabrication, or legitimate non-indexed / gray literature."; return res;
     }
-    ({title,year,doi,surname} = best); res.source=best.source;
-    res.doi=doi||""; res.titleFound=title; res.yearFound=year; res.score=bestScore.toFixed(2);
-    if(best.retracted){ res.verdict="RETRACTED"; res.detail="OpenAlex marks this work as retracted."; return res; }
+    ({title,year,doi,surname} = f.best); res.source=f.best.source;
+    res.doi=doi||""; res.titleFound=title; res.yearFound=year; res.score=f.bestScore.toFixed(2);
+    if(f.best.retracted){ res.verdict="RETRACTED"; res.detail="OpenAlex marks this work as retracted."; return res; }
   }
 
   if(res.yearRef && res.yearFound && Math.abs(res.yearRef - res.yearFound) > TOL_ANIO){
@@ -368,6 +413,11 @@ async function verify(ref){
     // Never silently report "clean" when the retraction check itself failed — that would be
     // exactly the false-negative failure mode this tool is meant to expose.
     res.detail = (res.detail ? res.detail+" " : "") + "Retraction status could not be confirmed (source API rate-limited) — verify manually before relying on this reference.";
+  }
+  // The cited DOI did not exist but the work does: at best "metadata issue" (unless retracted, which is worse).
+  if(doiNote){
+    if(res.verdict==="VERIFIED") res.verdict="METADATA";
+    res.detail = doiNote + (res.detail ? " " + res.detail : "");
   }
   return res;
 }
