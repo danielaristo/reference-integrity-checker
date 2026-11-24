@@ -19,6 +19,10 @@ Reglas de emparejamiento (v0.3):
     solo se aceptan con coincidencia total Y apellido del autor presente.
   - Si el apellido del primer autor NO aparece en la referencia, se exige
     coincidencia de título casi perfecta (>=0.95).
+  - Si la referencia trae DOI y el DOI existe, también se comprueba que el
+    título registrado aparezca en la cita (>=0.50 de sus palabras
+    significativas; si tiene menos de 3, deben estar todas); si no,
+    METADATOS DUDOSOS: el DOI pertenece a otra obra.
 
 Veredictos:
   VERIFICADA        existe y los metadatos coinciden
@@ -62,6 +66,7 @@ UMBRAL_SIN_AUTOR = 0.95   # exigencia si el apellido del autor no aparece en la 
 UMBRAL_DUPLICADO = 0.90   # similitud para considerar dos registros el mismo trabajo
 MIN_TOKENS = 3            # tokens significativos mínimos para confiar solo en el título
 TOLERANCIA_ANIO = 2       # ±2 años (desfase online-first vs. impreso)
+UMBRAL_TITULO_DOI = 0.50  # con DOI: fracción mínima de palabras del título REGISTRADO presentes en la cita
 
 
 # ----------------------------------------------------------------------
@@ -255,6 +260,21 @@ def verificar_referencia(referencia):
         resultado.update(fuente="Crossref", doi=doi, titulo_encontrado=titulo,
                          autor_encontrado=apellido or "", anio_encontrado=anio)
         resultado["score_titulo"] = round(score_titulo(referencia, titulo), 2)
+        # El DOI existe, pero ¿es la obra que dice la cita? Un DOI real pegado a un
+        # título inventado es una alucinación frecuente: se compara el título
+        # registrado con el citado. Si el título registrado es muy corto (<3 palabras
+        # significativas) se exige que estén todas, como en la búsqueda sin DOI.
+        n_tok = len(tokens_significativos(titulo))
+        minimo = UMBRAL_TITULO_DOI if n_tok >= MIN_TOKENS else 0.99
+        if n_tok >= 1 and resultado["score_titulo"] < minimo:
+            resultado["estado"] = "METADATOS DUDOSOS"
+            resultado["detalle"] = (
+                "El DOI existe pero está registrado a otra obra: «%s» (%s, %s). "
+                "Solo %d %% de las palabras clave de ese título aparecen en la cita: "
+                "posible título inventado con un DOI real, o título traducido/abreviado; "
+                "verifíquese a mano" % (titulo, apellido or "s. a.", anio or "s. f.",
+                                        round(resultado["score_titulo"] * 100)))
+            return resultado
     else:
         # --- Caso 2: sin DOI -> búsqueda en Crossref
         mejor, mejor_score, mejor_score_bruto = None, 0.0, 0.0

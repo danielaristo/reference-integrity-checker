@@ -190,6 +190,7 @@ const MAILTO = "danielaristo@yahoo.com";
 // anyone could reuse it.
 const OPENALEX_API_KEY = "EFzVGljUdkP62TGAMLu0nN";
 const UMBRAL_TITULO = 0.60, UMBRAL_SIN_AUTOR = 0.95, MIN_TOKENS = 3, TOL_ANIO = 2, CONCURRENCY = 3;
+const UMBRAL_TITULO_DOI = 0.50; // with a DOI: min. share of the REGISTERED title's key words present in the citation
 
 const EXAMPLE = [
   "Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.",
@@ -296,6 +297,15 @@ async function verify(ref){
     if(!it){ res.verdict="NOT_VERIFIABLE"; res.detail="The cited DOI does not resolve in Crossref (possible fabrication)."; return res; }
     ({title,year,doi,surname} = cfCross(it)); res.source="Crossref";
     res.doi=doi; res.titleFound=title; res.yearFound=year; res.score=titleScore(ref,title).toFixed(2);
+    // The DOI exists — but is it the work the citation says it is? A real DOI attached to an
+    // invented title is a common hallucination pattern. Compare the registered title with the
+    // cited one. A very short registered title (<3 key words) must appear in full, as in the no-DOI search.
+    const nTok = sigTokens(title).length, minScore = nTok >= MIN_TOKENS ? UMBRAL_TITULO_DOI : 0.99;
+    if(nTok >= 1 && parseFloat(res.score) < minScore){
+      res.verdict="METADATA";
+      res.detail=`The DOI exists but is registered to a different work: “${title}” (${surname||"n.a."}, ${year||"n.d."}). Only ${Math.round(parseFloat(res.score)*100)}% of that title's key words appear in the citation — possible invented title with a real DOI, or a translated/abridged title; check by hand.`;
+      return res;
+    }
   } else {
     let best=null, bestScore=0;
     for(const it of await crossrefSearch(ref)){
@@ -337,7 +347,7 @@ async function verify(ref){
 const $ = id => document.getElementById(id);
 const VMETA = {
   VERIFIED:{dot:"d-ok",sym:"✓",pill:"p-ok",label:"Verified"},
-  METADATA:{dot:"d-warn",sym:"!",pill:"p-warn",label:"Year mismatch"},
+  METADATA:{dot:"d-warn",sym:"!",pill:"p-warn",label:"Metadata issue"},
   RETRACTED:{dot:"d-danger",sym:"✕",pill:"p-danger",label:"Retracted"},
   NOT_VERIFIABLE:{dot:"d-neutral",sym:"?",pill:"p-neutral",label:"Not verifiable"}
 };
