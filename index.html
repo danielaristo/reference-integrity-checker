@@ -200,14 +200,25 @@ const OPENALEX_API_KEY = "EFzVGljUdkP62TGAMLu0nN";
 const UMBRAL_TITULO = 0.60, UMBRAL_SIN_AUTOR = 0.95, MIN_TOKENS = 3, TOL_ANIO = 2, CONCURRENCY = 3;
 const UMBRAL_TITULO_DOI = 0.50; // with a DOI: min. share of the REGISTERED title's key words present in the citation
 
+// Eleven references chosen so that one run shows every kind of result (checked against the live APIs):
+//   Verified (3)        1 plain · 2 with its DOI · 3 article in a regional journal (Revista Colombiana de Estadística)
+//   Metadata issue (4)  4 wrong year · 5 DOI with a typo (the work exists: the right DOI is shown) ·
+//                       6 a real DOI attached to an invented title · 7 an invented DOI on a real, indexed work
+//   Retracted (1)       8 Wakefield et al. 1998
+//   Not verifiable (3)  9 invented, no DOI · 10 invented DOI and title · 11 gray literature (a government report)
+// ("Could not check" only appears when Crossref or OpenAlex fail to answer, so it cannot be shown on demand.)
 const EXAMPLE = [
   "Taylor S.J., Letham B. (2018): Forecasting at scale. The American Statistician, 72: 37-45.",
-  "Hirsch J.E. (2005): An index to quantify an individual's scientific research output. PNAS, 102: 16569-16572.",
-  "Aria M., Cuccurullo C. (2017): bibliometrix: An R-tool for comprehensive science mapping analysis. Journal of Informetrics, 11: 959-975.",
-  "van Eck N.J., Waltman L. (2010): Software survey: VOSviewer, a computer program for bibliometric mapping. Scientometrics, 84: 523-538.",
+  "van Eck N.J., Waltman L. (2010): Software survey: VOSviewer, a computer program for bibliometric mapping. Scientometrics, 84: 523-538. https://doi.org/10.1007/s11192-009-0146-3",
+  "Corrales M.L., Cepeda-Cuervo E. (2019): A Bayesian approach to mixed gamma regression models. Revista Colombiana de Estadística, 42: 81-99.",
   "Hirsch J.E. (2011): An index to quantify an individual's scientific research output. PNAS, 102: 16569-16572.",
+  "Aria M., Cuccurullo C. (2017): bibliometrix: An R-tool for comprehensive science mapping analysis. Journal of Informetrics, 11: 959-975. https://doi.org/10.1016/j.joi.2017.08.07",
+  "Zhang W., Alvarez R. (2005): Predicting scientific impact with neural citation networks. PNAS, 102: 16569-16572. https://doi.org/10.1073/pnas.0507655102",
+  "Page M.J., McKenzie J.E., Bossuyt P.M. et al. (2021): The PRISMA 2020 statement: an updated guideline for reporting systematic reviews. BMJ, 372: n71. https://doi.org/10.1136/bmj.2021.71",
+  "Wakefield A.J. et al. (1998): Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and pervasive developmental disorder in children. The Lancet, 351: 637-641.",
   "García-Martínez J., Chen L. (2021): Semantic drift in citation cascades: a large-scale longitudinal analysis. Journal of Informetrics, 15: 101-118.",
-  "Wakefield A.J. et al. (1998): Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and pervasive developmental disorder in children. The Lancet, 351: 637-641."
+  "Okonkwo T.N., Lindqvist S. (2023): Bibliographic phantoms in LLM-assisted writing. Research Evaluation Quarterly, 9: 45-67. https://doi.org/10.31208/req.2023.9.2.45",
+  "Ministerio de Ciencia, Tecnología e Innovación (2024): Modelo de medición de grupos de investigación, desarrollo tecnológico o de innovación y de reconocimiento de investigadores. Minciencias, Bogotá."
 ];
 
 // ---------- text utils ----------
@@ -292,11 +303,18 @@ async function openAlexRetractedByDOI(doi){
   return d ? !!d.is_retracted : null;
 }
 async function openAlexRetractedByTitle(title, year){
-  const q = title.replace(/[,:|&]/g," ");
-  const results = await openAlexSearchRaw(q);
-  if(results === null) return null;
+  // Ask OpenAlex directly for RETRACTED works whose title matches, instead of searching the title
+  // and hoping the retracted record ranks in the top results (with duplicate DOIs, as in
+  // Wakefield 1998, the retracted record stopped showing up).
+  const q = title.replace(/[^\p{L}\p{N}\s]|_/gu," ").replace(/\s+/g," ").trim();
+  await throttleOpenAlex();
+  const d = await getJSON("https://api.openalex.org/works?filter=is_retracted:true,title.search:"+encodeURIComponent(q)+"&per-page=5&select=display_name,publication_year,doi,is_retracted&mailto="+MAILTO+openAlexAuth());
+  if(d === null) return null;
+  const results = d.results || [];
   for(const c of results){
-    if(titleScore(title, c.display_name||"") >= 0.9){
+    // retracted records are often titled "RETRACTED: <title>" or "Retraction—<title>"
+    const cand = (c.display_name||"").replace(/^\s*(retracted|retraction|withdrawn)\s*[:—–-]*\s*/i,"");
+    if(titleScore(title, cand) >= 0.9){
       if(year && c.publication_year && Math.abs(year - c.publication_year) > 1) continue;
       if(c.is_retracted) return true;
     }

@@ -233,12 +233,21 @@ def openalex_retractado_por_titulo(titulo, anio):
     si ALGUNO está retractado. Atrapa el caso de DOIs duplicados donde el
     registro emparejado no tiene el flag pero su duplicado canónico sí.
     """
-    consulta = re.sub(r"[,:|&]", " ", titulo)
-    candidatos = openalex_busqueda(consulta, filas=5)
-    if candidatos is None:
+    # Se pide a OpenAlex directamente las obras RETRACTADAS cuyo título coincide, en vez de
+    # buscar el título a secas y esperar que el registro retractado salga entre los primeros
+    # resultados (con DOIs duplicados, como Wakefield 1998, el retractado dejó de aparecer).
+    consulta = re.sub(r"[^\w\s]|_", " ", titulo)
+    consulta = re.sub(r"\s+", " ", consulta).strip()
+    url = ("https://api.openalex.org/works?filter=is_retracted:true,title.search:%s&per-page=5"
+           "&select=display_name,publication_year,doi,is_retracted&mailto=%s"
+           % (urllib.parse.quote(consulta), MAILTO))
+    estado, datos = fetch_json_estado(url)
+    if estado == "error":
         return None          # la consulta falló: estado de retracción desconocido
+    candidatos = datos.get("results", []) if estado == "ok" else []
     for cand in candidatos:
-        titulo_cand = cand.get("display_name") or ""
+        # los registros retractados suelen titularse "RETRACTED: <título>" o "Retraction—<título>"
+        titulo_cand = re.sub(r"(?i)^\s*(retracted|retraction|withdrawn)\s*[:—–-]*\s*", "", cand.get("display_name") or "")
         anio_cand = cand.get("publication_year")
         if score_titulo(titulo, titulo_cand) >= UMBRAL_DUPLICADO:
             if anio and anio_cand and abs(anio - anio_cand) > 1:
